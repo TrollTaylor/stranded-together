@@ -3922,7 +3922,9 @@ Levels: 0 nothing (no detour, no messages); 1 the voidout detour, HELLO, FIELD, 
 needs a two-game session`); if both games claim the same role the relay stays off.
 
 Capability: nothing is sent before the partner's SEH1 beacon (`shots::PeerBeacon`; channel 6 is up there). The BTS1 HELLO goes
-first (caps: field 1, noticed 2, void 4, reset-apply 8), and nothing but a HELLO is taken before the partner's HELLO. A partner
+first (caps: field 1, noticed 2, void 4, reset-apply 8), and nothing but a HELLO is taken before the partner's HELLO. Round 31
+review (wire 1): the partner's HELLO also proves channel 6, so a game that gets it before its own beacon poll sends its own HELLO
+at once, before the feature modules' hello handlers run; the feature sends (`FeatSend`) never go before this game's HELLO. A partner
 with bt_sync=0 or an older build never says hello: `[bt] sync: no partner hello after 15 s ... relay off`. A message of a newer
 link session than this module's starts that session first (its once-only HELLO is kept); only older ones count as stale.
 
@@ -4216,3 +4218,972 @@ behind that guard was wrong.
 * **The test.** two-games-bt-kill now waits for the armed line with +0x3A8 set and equal to the locator's scene, on the guest
   in leg 1 and on the host in leg 2, before the applied line. A refusal or an unequal value fails it.
 
+## 25. Round 31 stage 0: the probes
+
+`native/mod/bt_probe_r31.cpp` / `.hpp` (shared helpers `bt_probe_internal.hpp`), reached from bt_sync's `bt_probe` for ops 15
+and up. These are research tools for the round 31 BT features (the forecast on the guest, rain spots, the hunt and PULLED, tar,
+the gazer mirror, the voidout blast, craters, catchers, the sky, the kill look). Nothing here changes normal play: every op is
+refused outside hidden runs, and nothing is installed or called before one of them. The full list of ops and their arguments
+is in [debug-actions.md](debug-actions.md) (Bt probe).
+
+The rules:
+* `bt_probe` now takes up to 5 numbers (op and four arguments). The action line's numbers stop at 1e9, so op 36 takes a
+  reason code (0..3) instead of the raw hash.
+* The ops marked (s) need a sandboxed save: 18, 19, 22, 23, 25, 26, 29, 30, 33, 34, 35 and 36.
+* The byte checks run on the first op: 94 code sites, 29 rel32 call targets and 13 data constants in 13 groups (`[bt] r31
+  probe byte checks: n/n ok; ...`). A failed group refuses only its own ops (`[bt] r31 probe byte check FAILED: ...`). All
+  of them, plus three constants the code relies on (139 checks), were checked against ds.exe before the build; no address
+  had to be guessed.
+* Reads are guarded and game writes go through WriteProcessMemory. Game calls run under SEH on the game thread (a fault logs
+  FAULTED instead of crashing).
+* The detours are pass-through: they count, copy into a lock-free ring that the Tick drains, and use atomics only. An
+  emergency stop sends every detour straight through and ends every op at once, in the stop itself (after a tick fault no Tick
+  runs again): the forecast restore, the tar record, the fade and the blast ref, the sky bit and the spot's guard page. A load
+  ends every op but 35.
+* Each op that changes the game puts it back: 18 lets the job regenerate the region (or writes it from the Tick when the job
+  does not run), 19 removes its guard page, 26 removes its record, 29 restores the effector's fade, 34 clears the sky bit.
+* 35 is a real voidout, so it is the last step of a run only. 27 (the echo role's hunt mirror) is not built.
+
+What the maps had wrong (read again in ds.exe while building):
+* The forecast slot is read at 0x142E0C4D6 (`movsxd r8, [rcx+0x64A0]`). The hash constant 43758.5453 is a double at
+  0x143DB73E0.
+* The gazer actor's vt+0x10 only copies into actor +0x28 / +0x40, so op 23 turns the gazer's entity with TrySetTransform.
+* A tar mesh record is 0x20 bytes: f64 position, f32 radius at +0x18, f32 height at +0x1C. The mesh list is +0xC0 / +0xD0
+  and the circle list +0x60 / +0x70.
+* The kill stats path (stat 0x79 / 0x7A) has no killer check. The territory position is at +0x20. [param+0x50] is set as soon
+  as the +0xD0 list is non-empty (mov bl,1 at 0x14280AF41, before any inside test), so it is not an inside cue (review).
+* [param+0x848] is the per-update tar max: the locomotion writes it (0x14280AFCF), folds it into the smoothed +0x844
+  (0x14280B054..0x14280B0A1) and clears it at 0x14280B0C7 on every path, so a Tick reads 0 there. Ops 25 and 26 read +0x844
+  (review).
+* A rain spot is 0x30 bytes: cell x / y floats, radius in cells at +0x10, life at +0x18, owner at +0x20, kind at +0x28. The
+  spot update only compares the owner, it never dereferences it.
+* [comp+0x160]+0x90 is an int32 index (movsxd at 0x1429D66F6), not the agitation: ops 20 and 22 read the float
+  [[comp+0x198]+0x58] + idx*0x30 + 0x20 (0x1429D66D6, 0x1429D6701, 0x1429D670C) and log the index with it (review). Op 26's "fact in_tar" is the count of FUN_1426EC610 calls. Op 31 does not
+  read whether a territory's unit is loaded (that needs a game call nobody has checked yet). Op 35 calls
+  FUN_14299B1B0(mgr, Sam, 1, 0).
+
+The scenarios (one batch):
+`pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios bt-r31-probe-a,bt-r31-probe-a2,bt-r31-probe-a3,bt-r31-probe-b,bt-r31-probe-b2,bt-r31-probe-b3,bt-r31-probe-b4,two-games-bt-weather-probe -SeedSaves complete-100 -GuestSeed profile-only -Id round31-s0`.
+The design planned two 600 s runs, but the harness caps a run at 360 s, so they are split:
+* `bt-r31-probe-a`: 16 (install), 15, 17, 20, 21, 24, 28, 31, then 18 heavy rain and 18 sun. No dev_weather.
+* `bt-r31-probe-a2`: 18 sun then 18 heavy rain for 90 s (the comeback), then 19 rain and dry spots.
+* `bt-r31-probe-a3`: dev_weather 1, then 20 (one dump), 34, 23, 16's counts, and 22 (both variants) last.
+* `bt-r31-probe-b`: dev_weather 1, 32 for the whole run, 25 0, 25 1 with 24, 26 on list 0 and list 1 (Sam is walked out
+  30 m and back with dev_goto).
+* `bt-r31-probe-b2`: 16's counters, five blasts (29), two craters (30) with 28, then 32 on, 33 bring, 31, 33 kill, 31, 16's counts.
+* `bt-r31-probe-b3`: 36 with codes 1 and 3, a crater (30), a save, a reload of the run's newest save, then 28 and 15.
+* `bt-r31-probe-b4`: 35 alone. No optional step (a failed one fails the run): one bounded wait on `[bt] void real: done (..)`,
+  which the probe always writes within 150 s.
+* `two-games-bt-weather-probe`: 15 on both games three times, 60 s apart, then the host's dev_weather 1 and 15 again.
+
+The unknowns and the line that answers each:
+
+| Unknown | Op | Line to read |
+|---|---|---|
+| The job thread | 16 | `[bt] threads FUN_142E183F0 (the forecast job): tick N, other M`, and `[bt] wx job state at 17CF0: ...` |
+| Whether the guest write sticks | 18 | `[bt] wx apply +t: eff0 e raw x at Sam` (e stays the state) |
+| The rain-gone comeback | 18 (a2) | `[bt] wx apply gazer loc L: +0xCC 0x01322187 +0x180 h` under sun, then health back or new actors under rain |
+| Spot expiry and the owner key | 19 | `[bt] wx spot +t: ... ours yes/no life l` and `[bt] wx spot owner: never touched` (or `TOUCHED`) |
+| The regionmap and mask on both games | 15 two-games | both games' `[bt] wx2: slot s mask M ...` and `[bt] wx2 here: region r raw x` |
+| The hash | 17 | `[bt] wx hash: n regions, m slots, k mismatches (.. truncation-shifted s, golden lines g)`; the golden vectors: `[bt] wx golden: T .. region .. type .. slot .. game ..` |
+| Gazer mirror visibility (ARMED) | 22 | `[bt] gz mirror +t loc L: ... vis +0xB0 v` and the screenshots |
+| The agitation var and the writhe | 20 / 22 | `[bt] gz dump loc L: ... agit a (graph var idx i)` and `[bt] gz mirror +t loc L: ... agit a (idx i) (+0x80 1 +0x7C 10.0)` (a moves with the writhe; i stays) |
+| The yaw write | 23 | `[bt] gz yaw loc L: entity yaw a -> b, next frame c` (c == b) |
+| The action whitelist | 21 | `[bt] gz action 0x..` lines and `[bt] gz trace done (...)` |
+| The hunt end reason | 25 | `[bt] hunt end: caller <e29e0, e5d50, c6cf0, d9080 or other> site 0x..`, or `[bt] hunt self done (30 s): end seen no` (the hunt outlasted the window) |
+| PULLED fields | 25 v1 / 24 | `[bt] hunt self +t: hands .. pull ..` and `[bt] crowd i: ... +0x8B8 ...` |
+| The tar list and its side effects | 26 | `[bt] tar rec +t: inside yes/no (..), +0x844 v (+0x848 raw), list non-empty +0x50 .., fact in_tar ..` and `[bt] tar rec out (..): .. +0x844 max inside a, outside b` (a rises and b stays near 0: the record makes tar; cargo: the screenshots) |
+| The effector GUID and the fade | 29 | `[bt] fx effector res .. guid@+0x08 .. match m, +0x28 FadeStart +0x2C FadeRange`, `[bt] fx effector inst .. w v`, the screenshots |
+| The crater record path | 30 | `[bt] crater add +9 s: gen g ..., active a entity 0x..` |
+| Crater persistence | b3 | `[bt] crater: n records` before the save and after the reload |
+| The gazer-voidout crater | 35 (b4) | `[bt] void real: done (<how>, ..)`: after `[bt] void real: after the respawn:`, the crater lines (or the `no load` / `Sam not back` path) |
+| The catcher class and edges | 31 / 32 / 33 | `[bt] cat rec i: type t ...`, `[bt] cat notify id .. hash 0x..`, `[bt] cat bring: record n (was m), type t` |
+| The drop total | 32 | `[bt] cat drop at (..) param 0x.. total n` |
+| The sky | 34 | `[bt] sky +t: 6508 v 6518 0x..` and the before / during / after screenshots |
+| The kill look | 36 | `[bt] kill look loc L reason r: death anim (screenshot), stats d ...` |
+
+### 25.1 The first batch (2026-11-27, runs `20261127-205038` .. `-210425`)
+
+Three of eight passed (b, b2, b4). Every run's byte checks were 139/139, except two-games (138/139: see the fixes). Results:
+* **Forecast job (16): settled.** The job FUN_142E183F0 ran on worker threads in all 2854 calls (`tick 0, other 2854 (threads
+  8+)`); its pre-job FUN_142E17CF0 ran on the game thread (2854 calls). Zero of 2854 is not "never": WX's detour must use
+  atomics only and be safe on any thread, as designed. Other job functions did run on the game thread now and then (crowd
+  update B E5D50 tick 1 / other 992, the gazer AI action C49D0 tick 5 / other 254), so hooks there must be safe on both.
+* **Region map on both games (15): settled for one read.** Host and guest had the same slot (2), mask, clock, grid hash and
+  region map, and all 63 forecast rows were identical. Only the sampled values (hold, frac, rain) differ. So the forecast is
+  the same on both games when the clock and save match; WX still has to send the rows, because a guest on another save or
+  clock would not match. Reads 2 and 3 and the read after dev_weather were not reached.
+* **Hunt end (25): settled.** The game's own hunt ended from crowd update B (`hunt end: caller e5d50 site 0x1429E6D32`), on a
+  worker thread. With the crowd flag written (variant 1) the hunt did not end in 30 s; that leftover hunt (hm+0x140) cleared
+  about 0.14 s after op 26 moved Sam 29 m away (goto at 65.875, hm140 0 at 66.016).
+* **PULLED (25 v1 / 24): not seen.** The hunt's hands, pull and grab (hm+0x00/+0x04/+0x10/+0x14) and the crowd's
+  +0x230..+0x244 stayed 0 in all 112 samples, and no hands show in the screenshot. What moved: the crowd's member count
+  c+0x2B0 (printed as "hands" on the `[bt] crowd` line, 0-3 over 120 samples) and the hunt-self "members" (1-2). No grab
+  happened, so PULLED's fields are still unproven.
+* **Tar (26): settled.** A record we add makes tar on its own, and the record was removed cleanly. Health stayed 1000.
+  * Rise inside: list 0 (mesh) went from 0.012 to 1.000 in about 18.5 s; list 1 (circle) reached 0.80 in 3.3 s, and on
+    re-entry went from 0.03 to 0.999 in about 13 s.
+  * Fall outside: list 0 about 0.9 s (goto at 65.875, 0.000 at 66.750), list 1 about 0.35 s.
+  * The summary's "outside" maximum (1.000 on list 0, 0.610 on list 1) is a one-sample lag: the first sample after Sam left
+    still reads the inside value. It is not the leftover hunt; a summary should skip about 1 s after Sam leaves.
+  * The in-tar call FUN_1426EC610 (the gazer fact): on list 0 it counted only while op 25's hunt was still up (1 to 109),
+    then a 19-call burst at re-entry (72.5 to 73.0, while +0x848 read 1.0), then stayed flat at 128 for 18 s inside. On list
+    1 it rose steadily (1 to 695) while Sam was inside. So list 0 does not keep the gazer fact going and list 1 does, which
+    supports preferring list 0. Stage 4's "hm+0x140 stays none" gate must allow for that short burst at entry.
+* **Voidout blast (29): partly.** The blast alone never reached the GameOver flow (flow calls 0, health 1000) at 300, 600 and
+  1000 m. The screen went fully white at +2 s and +5 s at every distance (the base blast's flash). The effector was created
+  once per blast, but the GUID was read at the wrong offset (it starts at +0x08), so the fade was never written and the
+  fade test is still open. "ref released no": the probe passed a single 8-byte slot to the game's ref functions, which use a
+  24-byte node, so the add wrote past it. Fixed.
+* **Crater add (30): settled.** The pending-list add was a record with an entity by +9 s (the first check), at the spot, r 40.
+  IsDisableCrater (flags 1) gives a record with no entity.
+* **Catcher (31 / 33): partly.** The bring made three type-1 catchers and the spawn notify 0x63db9ed5 was seen. The records
+  went from 3 to 0 by themselves within 15 s, so the kill found nothing. bt_sync's census reads the same record list and agreed
+  (catchers 3/3, then 2/2 at 146.0, 1/1 at 149.1, 0/0 from 150.1; its `catcher 0 actor 0E002 ACTIVE` at 149.1 is a slot
+  change as the list shrank, not a live actor), and no catcher shows in the 20 s screenshot. The cause is open: the list may
+  be only a spawn queue, or the catchers despawned (Sam was about 160 m from them, 236 m from the territory). A probe must
+  read the three ids' components / entities after the records drop. The drop total was not reached.
+* **Real voidout (35): partly.** The flow ran (flow calls 1) and the GameOver showed the game's Load menu (it lists Checkpoint
+  and Autosave entries); nothing was chosen, so there was no load and no respawn in 120 s, and the GameOver flow added no
+  crater record in that time. The load path is untested. The rerun's `pad A` loads the top entry, a Manual Save from
+  2024/10/24 that predates the voidout, so "0 records" after it cannot tell "no crater from a gazer voidout" from "the save
+  predates it", and that respawn is not the game's checkpoint respawn.
+* **Not reached:** the hash (17, so no golden lines yet), the forecast write (18), spots (19), the gazer dump, trace, mirror
+  and yaw (20-23), the sky (34), the kill look (36) and crater persistence (b3).
+
+What failed and what changed for the rerun:
+* `waitnew` only sees lines written since the previous step started, so a second `waitnew` after an op that logs at once
+  always fails (a, two-games). Each such op now gets one `waitnew` right after it; two-games sends 15 to each game separately.
+* a3: op 22 said the nearest gazer (58.9 m) had no DSGazerComponent; that message also covers "no entity at actor+0x68",
+  so which one is unknown (stage 5's apply waits for the rerun's `[bt] gz pick:` line). Op 22 now picks the nearest gazer beyond 40 m that has one, op 23
+  the nearest with an entity, and both log the nearest one skipped (`[bt] gz pick: ...`). The scenario dumps the gazers (20)
+  first, and runs 34, 23 and the counts before 22.
+* b3: op 36 refused because the local player id is 0, which it treated as unknown. The local Sam's id really is 0 (bt_sync's
+  own "me 00000" lines). Op 36 now reads the id itself (the same registry call as bt_world) and accepts 0; a killer of 0 is
+  written through `btworld::kKillerZero`. Note: btrules::KillRelay also treats id 0 as "no player" (see the findings).
+* two-games: bt_sync's voidout hook puts a jmp on the voidout's first bytes, so the void byte check failed there (ops 29 and
+  35 off, bt_probe 11's crater group too). The check now accepts our own hook: the jmp must lead to bt_sync's detour, the moved
+  bytes are compared in MinHook's trampoline and the rest in place.
+* b2: the GUID is read at +0x08 and the log shows FadeStart / FadeRange; the blast's ref uses a 24-byte node; the catcher is
+  killed right after the bring, with the catcher log and the thread counters on.
+* b4: A is pressed on the Load menu until the load begins.
+* a2 failed on the Steam offline dialog (no code change).
+
+**The rerun** (runs `20261127-215040` .. `-220817`): 6 of 8 passed, and 139/139 byte checks passed on both games.
+
+Settled:
+* **Threads.** The forecast job, catcher tick, notify and effector creator run on workers.
+* **Forecast rows.** A written row sticks for 60 s with 0 skips, but the regeneration restore does NOT bring the guest's
+  own forecast back (eff0 keeps the written value). WX now saves the guest's rows and writes them back.
+* **Both games.** The region map is equal on both games, but the guest does not follow a change on the host, and the slot
+  timeline drifts (WXROW's clock field carries the slot phase). The drift shows at read 3, before any change: between reads
+  2 and 3 the host's clock moved 28 and the guest's 60, and mgr238, +0x6508 and climate already differed (so a guest's
+  "mgr238 1" cannot prove WX worked). The host's "last 430354 -> 430420" afterwards is dev_weather's own kForecastReset, not
+  drift.
+* **The hash.** 119 / 2016 slots mismatch, so kForecastGolden is not filled and WX sends rows.
+* **Spots.** Life 10 s, gone at 0, owner never touched. A dry spot un-arms gazers, so it is never mirrored on a real save.
+  The kind-2 spot ran only in rain op 18 had already forced, so rain from a spot in a dry region is not shown (stage 3's
+  gate has a dry-region leg).
+* **Hunt end.** It comes from crowd update B; PULLED was never seen, so it is set only by test op `bt_sync 8`.
+* **Tar.** The hm+0xC0 / +0xD0 list gives the tar feel (+0x844 to 1.0) with 0 in-tar fact calls.
+* **The flash.** The effector fade 150/450 removes the flash at 600 m and beyond and keeps it at 300 m.
+* **Craters.** The crater add works. Whether a gazer voidout makes a crater is **still open**: b4 again loaded a save that
+  predates the voidout (the clock after the respawn is the start state's 430354), so its 0 records rule out only a crater
+  added before the reload. b4 now forces a checkpoint save before the voidout and continues from it.
+* **Catchers.** They vanish 12-16 s after a far spawn (rerun: 147.6 / 150.6 / 151.6 after 135.6), with the edge hash
+  0x2FC57393; FUN_142A928C0(1) does not kill them, and no drop was reached.
+* **The kill look.** Both reasons set the dead bit 0x8 and count in the field; 0x5414860D changes no stats and 0x74FB05EE
+  credits the local player. The death animation is **not** shown: the two targets were unrealized gazers under sun (58.9 m,
+  81.9 m; no entity), the screenshots show only Sam, and "death anim (screenshot)" is fixed text in the probe's line.
+* **KillRelay.** The player id really is 0, so `player_id != 0` stays and test rows were added.
+
+New ds.exe facts:
+* A gazer has an entity and a DSGazerComponent only in state 2.
+* State 2 needs ARMED (rain) and this game's player within [[actor+0x10]+0x80]+0x70, about 50 m (kept to 60 m; score at
+  0x142995C94). A gazer sensing its player is state 0 with NEAR.
+* Flag 0x1 means realized (0x1429956A8), not dead; the dead bit is 0x8 (health +0x180 <= 0).
+* Stage 5's mirror therefore needs a realized copy, the receiver 25-60 m from the gazer in rain.
+
+Still open:
+* a3: no gazer was realized at 59 m. The scenario now walks to 29.6 m and 46 m, and op 20 logs the realize range.
+* b3: coop_session 5 needed a host session. In a hidden solo run with the save redirect it now calls the pause menu's Load
+  itself.
+* The sky write works but showed no change in rain.
+* b4: the gazer-voidout crater (above).
+
+Review fixes before the next rerun: op 22 now re-checks state 2, the picked entity and the component's back pointer before
+every write (leaving state 2 frees the entity and DSGazerComponent while the actor id stays, and a WriteProcessMemory write
+does not fail on freed heap), and writes the gazer's own +0x80 / +0x7C back at the end, keeping the drops on until they read
+back (`[bt] gz mirror back loc L after n s: .. back yes`). BlastGate drops partner blasts nearer than 300 m on a real-save
+guest until a near-blast leg (0 / 30 / 90 m, dev_god 0) passes: probe 29 tested only 300 m and beyond, under dev_god 2.
+
+**Rerun 2** (runs `20261127-230816` .. `-231201`): 3 of 3 passed, and no build stage waits on a probe any more.
+* a3: gazer 40AB1A93 realized at 29.6 m and stayed realized at 48 m (realize range 50 m). The agitation graph var (idx 38)
+  went 0 -> 1.0, and the gazer's own +0x80 / +0x7C read back (`back yes`, both mirrors). Kind 2 sets the react bit 0x10, and
+  the game rewrites kind every update. The yaw sticks (90 -> 135). An idle realized gazer sends only action 0x68A02F9F, so
+  there is nothing to whitelist. Clearing ARMED hides the gazer (+0xB0 0.00 for 18 s) and lets it drift 3.3 m: never clear
+  it. The screenshots never framed the gazer, and a "Lou's stress level" notice on two shots is unattributed. The stage 5
+  gate aims at the partner's body and compares against a control leg.
+* b3: a crater record survives a save and load (same position, radius, gen and yaw, new entity). Kills persist too.
+* b4: a gazer voidout followed by a checkpoint continue leaves 0 crater records. In ds.exe the pending-list grow
+  FUN_142A6A260 has only two callers, the catcher annihilation FUN_142A003D0 and the save reader. So CR sends only catcher
+  voidouts, and a gazer voidout is a blast only.
+* Sky: the +0x6518 bit 0 is read only at 0x142E1D6B3, where it forces +0x6508 = 1. In rain +0x6508 is already 1, so the
+  write cannot show there. It gets a solo gate under sun, and is dropped if nothing changes.
+* Kill look: rerun 2 again hit unrealized gazers, so the death animation is still unproven. The stage 8 gate kills a
+  realized gazer on screen.
+
+## 26. Round 31: full BT sync
+
+Round 31 makes the two games share what the BTs do, not only the field state of section 21. The partner's weather, the rain
+over a hunt, the tar of a hunt, a gazer reacting to the partner, a voidout's blast and crater, a catcher's rise and fall, the
+look of a partner kill, a field's respawn and the tarred sky: each is a small module under native/mod (bt_<x>.cpp, its pure
+rules in bt_<x>_rules.hpp, its tests in tests/bt_<x>_tests.cpp) on top of bt_sync's BTS1 relay (link channel 6). bt_sync only
+routes: each module's caps go into the hello, BTS1 types 9..16 go to its OnMsg, the world edges to OnWorldEvent, the TickCtx
+to Tick, the test ops `bt_sync 8..13` to its Command, and EmergencyStop to its EmergencyStop. Section 25 holds the probes
+(bt_probe_r31.cpp) whose proven calls, byte checks and SEH wrappers the modules copy.
+
+The rules every module keeps:
+* A guest on her own real save (host_save=0) gets nothing written to her world beyond cosmetic effects (a mark, a turned
+  gazer, a played blast far away). Nothing goes to the game's servers.
+* Every game call runs on the game thread under SEH; reads are guarded; writes use the guarded write helpers.
+* Every site is byte-checked before first use. A failed group turns off only its own feature, with one log line.
+* Whatever a module put into the game is taken back on a load, link loss, the partner gone, the feature turned off, and
+  EmergencyStop (which runs at once after a tick fault: no later Tick comes).
+
+| Feature | Module | Key (as built) | After its gate | Gate scenarios |
+| --- | --- | --- | --- | --- |
+| 26.1 weather | bt_wx | bt_weather=1 (sent, compared) | 2 (applied on a sandboxed guest) | two-games-bt-weather, -realsave |
+| 26.2 hunts, rain spots | bt_hunt | HUNT on with bt_sync; bt_rain=0 | bt_rain 1 | two-games-bt-trouble, two-games-bt-trouble-dry |
+| 26.3 tar felt | bt_tar | bt_tar=0 | 1 | tar-feel-echo, two-games-bt-trouble-tar, -realsave |
+| 26.4 gazer mirror | bt_mirror | bt_gazer_mirror=0 | 1 | two-games-bt-gazer, -realsave |
+| 26.5 voidout, crater | bt_void | bt_void=1 (the blast) | no change (2 = 1 this round: CR DROPPED) | two-games-bt-void, -void-crater, -void-realsave |
+| 26.6 catchers | bt_catcher | bt_catcher=1, bt_crystals=0 | no change | two-games-bt-trouble-catcher |
+| 26.7 kill look, respawn, sky | bt_extra | bt_kill_look=0, bt_respawn=0, bt_sky=0 | 1 each, if its gate passes | two-games-bt-kill-look, -kill-respawn, -realsave, bt-sky-sun |
+
+As shipped (v0.45.0, after gate batches 1..4 of 2026-11-28): bt_weather=2, bt_rain=1, bt_tar=1, bt_gazer_mirror=1, bt_void=1,
+bt_catcher=1, bt_kill_look=1, bt_respawn=1 (config.hpp). Dropped this round: CR, the crater record (bt_void 2 acts as 1; it
+made a mission-progress server write on the guest, 26.5), RW crystals (bt_crystals=0) and the sky (bt_sky=0: the tarred sky
+moved each colour channel by less than 10, under the sky's own drift). The gazer of the mirror and the kill look was never
+visible in a hidden run's shots (BTs show only while scanning); both pass on their log lines. Tar and cargo: the 5 worn pieces of
+tar-feel-echo wear the same with no tar at that spot (run 20261128-075827: leg B -837.474, leg C -836.074 over 20 s), so the tar
+adds none; kRealSaveOk stays false all the same (a real-save guest never gets a tar record).
+
+The test ops (hidden runs only; [debug-actions.md](debug-actions.md) "Bt sync"): 8 bt_hunt, 9 bt_void, 10 bt_catcher,
+11 bt_extra, 12 bt_tar, 13 bt_mirror. The host_save=0 legs: a hidden run always redirects the saves, and testenv refuses an
+added host_save line, so `bt_test_real_save=1` (a guest in a hidden run only; config.hpp) makes bt_sync's SandboxedHere()
+false: RealSave(), TickCtx.real_save and the hello (no kCapResetApply) then say "her own real save". It only ever takes writes
+away. Some modules also keep their own stand-in op (`bt_sync 8 -1 1`, `9 1 4`, `11 2 1`, `12 0 1`, `13 1`), which tests only
+that module's gate.
+
+Integration notes (round 31): the tar marker's ring takes the hunt's own radius (bt_hunt's TarRingRadius, 3..30 m, smaller
+while PULLED; 6 m when none); TROUBLE's catcher mark gives way to bt_catcher's while bt_catcher shows a partner catcher (one
+catcher key in bt_markers); the host's crater gate reads bt_sync's FIELD compare (internal::RecordsEqual()).
+
+The partner counts as gone (WorldEvent::partner_gone) when the link is up but the partner's SEH1 beacon is older than 12 s.
+The beacon goes every 5 s, so the first gate batch's 5 s limit read an on-time beacon as "gone" now and then (bt_hunt,
+bt_wx, bt_mirror and bt_void all logged a spurious "partner gone"). 12 s is two missed beacons.
+A reconnect clears the partner's beacon, and the partner's BTS1 hello comes back before the first new beacon. With no beacon
+yet on this link session, the partner counts as gone only 12 s after bt_sync first sees the partner on it (run
+20261128-010942: `[link] CONNECTED` at 91.656, a spurious `wx: not applied: partner gone (held for 10 s)` at 91.672, the
+first beacon at 95.687). Before, every reconnect gave bt_wx a 10 s hold and bt_hunt, bt_mirror and bt_void a "partner gone".
+
+### 26.1 Weather (WX: the host's forecast on a sandboxed guest; bt_wx)
+
+**What it does.** Both games keep their own weather forecast: per region, 32 slots ahead of rain or sun (the "eff" row). The
+two forecasts drift apart, so the host's rain was often the guest's sun. With WX the host sends its forecast rows, and a
+sandboxed guest (her saves redirected: host_save=1) plays the host's forecast for as long as the link holds. When the link or
+the partner goes, or a load starts, the guest gets her own rows back exactly as they were. A guest on her own real save
+(host_save=0) is never written: she only compares and logs. Nothing goes to a game server.
+
+**Module.** native/mod/bt_wx.cpp / .hpp (st::bt::wx), the pure part in bt_wx_rules.hpp (st::btrules::wx), on the shared
+codecs in bt_rules.hpp (WxSchedule, WXROW, WXBEAT, WxAssembler, WxApplyGate). Config `bt_weather=0|1|2`, built **1**:
+* 0: off.
+* 1: the host sends its rows; both games send beats; the guest compares only.
+* 2: a sandboxed guest also applies them. It needs bt_sync 2 as well; at bt_sync 1 it compares only.
+
+Flip the default to 2 after the gate `two-games-bt-weather` passes.
+
+**Caps.** kCapWx 0x100: this game takes part. The host sends WXROW and WXBEAT; a guest sends WXBEAT, so the guest offers 0x100
+too. kCapWxApply 0x200: a sandboxed guest at bt_weather 2 and bt_sync 2 applies the rows. A failed byte check offers 0.
+
+**The weather system** ws = [0x147BF83B8] (its RIP load at 0x142E1FE34 is checked).
+* slot: i32 at +0x64A0 (1..3); region mask: u64 at +0x48; clock: f32 at +0x64A8; last: f32 at +0x64AC.
+* instant grid: byte at +0x6515. Job state: [[ws+0x6998]+0x28]; 0 is idle and 0x7111BEEF is done.
+* row r of slot s = ws + 0x8A0 + (s*0x40 + r)*0x5C. Fields: +0x00 type (never written); +0x04 / +0x08 window start / end;
+  +0x0C base[32]; +0x2C eff[32] (the job's output); +0x4C..+0x54 forced; +0x58 bits.
+
+**The detours** (MinHook, put in lazily once the partner's hello names WX).
+* The forecast job FUN_142E183F0 runs on worker threads.
+* The pre-job FUN_142E17CF0 runs on the game thread right before the job is queued.
+* The detours make no game calls, allocate nothing and log nothing. They share data with the game thread through two seqlocks
+  of atomic u64 words (this game's own rows, and the host's snapshot to apply). The saved rows sit behind a try-lock: a run
+  that cannot take it skips once.
+* On every game, after the job, the job detour copies this game's own eff rows into the "own" seqlock, at most every 250 ms.
+
+**The host.**
+* A new gen (the rows, the mask or the slot changed) goes at once as WXROW (BTS1 type 9) in 3 chunks of up to 25 rows, at most
+  once a second. The current gen goes again every 10 s; that resend repairs a lost chunk and refreshes the phase.
+* The WXROW clock field carries the host's **slot phase** = host clock - host last, clamped to 0..600 s, not the host's clock.
+  The clocks drift between games (PF 5 read 3: +28 s against +60 s over the same minute).
+* WXBEAT (type 10) goes every 2 s from both games. It carries slot, state, gen, clock, crc and the raw rain and region at
+  Sam's spot. A host beat for the same slot, in any state other than loading, keeps the guest's snapshot fresh.
+
+**The guest.**
+* The assembler takes a snapshot only once all chunks of one gen are in and the crc matches. Her phase is anchored to her own
+  clock when the snapshot arrives; a resend re-anchors it.
+* The gate (WxGate) checks the real save first: a guest on her own real save gets "this game plays on its own real save
+  (host_save=0)", whatever bt_weather says. Then WxApplyGate: bt_weather 2, the link up, not loading, a complete snapshot, the
+  slot equal, the snapshot under 10 s old (WXBEAT keeps it fresh) and the mask equal. Otherwise hold, or restore if applied.
+* After a "partner gone" restore, no new apply for 10 s.
+
+**Apply** (in the job detour, before the original).
+* The first time for a slot, it saves her own masked rows (+0x04..+0x5B, 0x58 bytes each) and logs eff0 at Sam's region.
+* Each masked row then gets:
+  * base[32] = the host's eff;
+  * window start = her own clock - the phase; window end = start + 32*600;
+  * forced = 0 and bits &= ~5 (bit 1, her own dry spots, stays).
+* Only the parts that differ are written, through the guarded write helper, so a steady apply writes nothing.
+* On the first apply, +0x6515 = 1, once.
+* After the original, bit 0 of +0x58 (the shift's random roll) is cleared again.
+* A slot change writes the old slot's saved rows back before the new slot's rows are saved. A new weather system (a load
+  replaced ws) drops the saved rows unwritten.
+
+**Restore.**
+* It runs on link loss, partner gone, a load start, a stale snapshot, another slot, a mask change, bt_weather below 2, and
+  EmergencyStop.
+* The saved rows (+0x04..+0x5B of each masked row, eff0 included) are written back, but only into the ws they came from.
+  This differs from the design's regeneration restore, which left eff0 at the written value (PF 3).
+* Who writes it:
+  * normally the pre-job detour (the game thread, the job idle), or the job detour before its original;
+  * the Tick, under SEH, only when no detour wrote it for 3 s and the job state is 0 or 0x7111BEEF.
+* EmergencyStop runs synchronously after a tick fault, so no later Tick will come.
+  * It sets the detours to pass through and leaves them hooked, and allows no new writes.
+  * The pre-job detour still writes a pending restore, even in pass-through.
+  * If the pre-job hook is not in, EmergencyStop writes the rows itself, waiting at most 100 ms for the job to go idle.
+
+**Byte checks** (once, before any hook). They are the probe's wx sites, copied from bt_probe_r31.cpp:
+* the job entry, its jmp at 0x142E045A0, 0x142E0C4D6, 0x142E19BA3, 0x142E1FE79, FUN_142E0C6B0 and FUN_142E0C3F0;
+* the RIP load 0x142E1FE34 -> 0x147BF83B8.
+
+A failure turns WX off with one line. The pre-job site has its own check: a failure there drops only the pre-job hook, and
+the restore then comes from the job detour or the Tick.
+
+**Log lines** (each is rate-limited).
+* `[bt] wx: bt_weather=N as the host|guest: ...; waits for the partner's hello` / `[bt] wx: off (bt_weather=0)`
+* `[bt] wx: byte checks n/m ok; wx ok|OFF, the pre-job ok|off`; on a failure, `[bt] wx: r31 byte check FAILED: wx (<site>): wx off`
+* `[bt] wx: partner hello (caps 0x..): WX on; the guest applies the rows | the guest compares only | the host sends its rows`
+* `[bt] wx: hooks in: the forecast job FUN_142E183F0 (...), the pre-job FUN_142E17CF0 in|OUT; <what this game does>`
+* The host: `[bt] wx sent: slot S gen G, N regions (K messages), crc C (phase P s)`
+* The guest:
+  * `[bt] wx: the host's forecast in: slot S gen G crc C, N regions, phase P s`
+  * `[bt] wx: own rows saved before the first write: slot S, N regions (eff0 E at Sam's region R)`. E is the saved eff0 at
+    Sam's region; the line waits for that region to be read (at most 10 s, then `? at Sam's region -1`), so it can come
+    after the first `wx applied` line
+  * `[bt] wx applied: slot S gen G crc C (first: instant)`, then `[bt] wx applied: gen G` per new gen
+  * `[bt] wx restored: <why> (own rows written back: eff0 E)`, where E is the saved eff0 at Sam's region
+  * `[bt] wx: not applied: <why>` (once per reason, at most every 10 s)
+* `[bt] wx compare: schedule equal|DIFFER (k regions)|unknown (...); rain host x at host, here y at Sam; region host a here b; eff0 host c here d; mgr238 here m (gen G, <verdict>)`.
+  It comes every 30 s, and at most every 5 s when the schedule verdict or a rain band changes. The bands are: below -0.5,
+  -0.5..0, above 0, and not read. 99.000 means not read. mgr238 is information only, because it differs between the games
+  with no change made (PF 5).
+* Faults: `[bt] wx: N guarded writes failed`, `[bt] wx: own rows dropped, nothing written back: the weather system was
+  replaced (a load)`, `[bt] wx: EmergencyStop: ...`.
+
+Status line: `wx: host bt_weather=N gen G, sent R rows B beats, got B beats`, or `wx: guest bt_weather=N <verdict>; got ...;
+applies A writes W skips K; saved yes|no; restores R`.
+
+### 26.2 Partner hunts and rain spots (HUNT, PULLED, RS and the tar marker; bt_hunt)
+
+**What it does.** When BTs hunt one player (the hunter area is up and the tar crowd is round her), the other player's game is
+told. It logs the hunt, draws the tar ring round the partner and, with `bt_rain=1`, makes it rain round the partner in the
+receiving game too. When a test hunt "pulls" her (the drag into the tar), the partner's TROUBLE marker says PULLED.
+
+**Sender.** A two-game session (host or guest) with `bt_sync` 1 or 2 reads the hunter manager (hm = [0x147BECBD0]) at 20 Hz on
+the game thread, with guarded reads only:
+
+* the area at hm+0x140 is up;
+* the local crowd comes from hm+0x50 (count) and hm+0x58 (list). Each comp is the entry minus 0x230, and it is local when comp+0x48
+  is hm+0x140 - 0x20. Each comp gives the centre (+0x260, f64[3]), the radius (+0x278) and the members (+0x2B0);
+* the gold byte is hm+0x244.
+
+btrules::HuntTracker sends BTS1 type 11 HUNT (56 B) at about 4 Hz while the hunt is up, at once on a flag edge, and one CLEAR when
+it ends. HUNT goes once the partner's hello offered cap 0x400, the hunt reads passed their byte checks, and no load is running. A
+load, link loss or the partner gone ends the episode: a CLEAR goes on a load, while the link is still up.
+
+**PULLED.** PULLED is sent **only** from the test op `bt_sync 8`, from 2 s to 6 s of it, with level 1.10, hands 1, strength
+0.60 and the deep flag. The natural reading (hm+0x00 hands > 0, or the grab byte hm+0x14 != 0) has never been seen non-zero
+(probe-findings 12). The sender logs that reading once per episode but does not send it. bt_sync's 1 Hz TroubleCensus asks
+`hunt::PulledNow()`, so TROUBLE says PULLED for the same 4 s.
+
+**Receiver.** btrules::HuntView logs UP once per episode, PULLED when its flag rises, and CLEAR once with the episode's length.
+No HUNT for 3 s counts as a CLEAR. On each UP it calls `btmarks::Tar` (the tar ring round the partner; gold and test flags
+carried). On a CLEAR it calls `btmarks::ClearTrouble` when the partner has no TROUBLE of its own.
+
+**Rain spots (RS).** With `bt_rain=1` and `bt_sync=2` (bt_sync 1 only logs), the receiver keeps a kind-2 rain spot r 50 m on the
+hunt's centre. The call is FUN_142E14F60(weather system, pos, radius, life, owner, 0); it takes the weather lock itself, and the
+owner key is never dereferenced. The spot is refreshed every 2 s while the gate makes it. The spot has 8 slots, each with its own
+static 16-byte owner key; bt_catcher's catcher spot shares them through `hunt::SpotWant` / `SpotDrop`. btrules::RainSpotGate
+decides each refresh:
+
+* **drop:** bt_rain 0, the source ended (a CLEAR, or no HUNT for 3 s), or a bad radius.
+* **drop on a real save** (a guest with host_save=0), at any distance (review, safety 1): `this game plays on its own real save
+  (host_save=0): a rain spot is timefall there`. A rain spot is real timefall at that place: her cargo, vehicles and structures
+  inside it age or decay and her BTs there arm, which is world state in her own save, not a cosmetic effect (the same reason as
+  WX and the dry spot). bt_hunt's SpotsOff refuses before any slot is booked, so the UP line says `rain spot: none (...)`; the
+  catcher's spot gets the same refusal through `hunt::SpotWant`. The 3 s real-save life and the r + 110 m margin stay in
+  bt_rules.hpp as a second lock only.
+* **hold:** not playing (a menu or a load).
+* **make:** in any other case.
+
+Three rules this module adds:
+
+* **The ARMED-gazer rule.** Before a slot's first spot, a gazer of this game's that is ARMED (flags 0x80000) within 150 m
+  (horizontal) **holds** the spot. ARMED comes with this game's own rain, so the spot would add nothing there. The rule is not
+  checked again once the spot is made, because the spot's own rain arms the gazers under it (the leg D pass line). An unarmed
+  gazer (0x10004 under sun) never blocks a spot.
+* All distances to a spot are horizontal, since the spot is a column.
+* There are no spots from FIELD (it carries no rain state) and no kind-0 dry spots this stage.
+
+The spot life is 10 s, or 3 s on a real save. After the last refresh the slot drains: the module polls the spot list (ws+0x90
+count, ws+0x98 entries of 0x30 B: +0x18 life, +0x20 owner) at 1 Hz until its owner is gone. It gives up after 15 s ("still
+listed"). Only then is the slot free again, so an owner key never names two spots at once.
+
+On the first spot of a slot, and 10 s later, the module reads the raw rain level at the spot (FUN_142E0C3F0): "rain spot check
+-0 s / +10 s". A dry region reads about -0.5 (region 43 under sun; a kind-0 dry spot about +0.45); the kind-2 spot about
+-1.0, heavy rain -1.5. The first gate batch showed the spot working in the dry region: -0.5 before it, about -1.0 after, and
+the gazers under it went ARMED about 6 s after the spot.
+
+**Safety.**
+
+* Every game call runs on the game thread under SEH: the spot call and the raw rain read, each copied from bt_probe_r31.cpp
+  ops 19 / 25.
+* Every site is byte-checked on first use, in three groups: hunt reads, spot, rain read. A failed group turns off only its part,
+  with one log line. The spot call faulting turns spots off for the run.
+* No game-server write. A real-save guest gets no rain spot at all (review, safety 1).
+
+**Restore.**
+
+* A load: every slot is freed (no refresh again), the test ends and the view resets.
+* Link loss or the relay off: every slot is let go (no refresh again) and the view resets; link loss also ends the test. A slot
+  that made a spot drains and stays watched (a read only) until its spot is gone, so "rain spot gone" still comes.
+* The partner gone: only the spots are let go, the same way. The sender and the view stay: sending writes nothing to the game,
+  and a partner that is really gone stops sending HUNT, so the view expires in 3 s. (Before, a spurious "partner gone" cut a
+  test HUNT short with no CLEAR and dropped the drain watch, so "rain spot gone" never came.)
+* EmergencyStop (an atomic, any thread, synchronous): no spot is ever refreshed again. Each spot dies within its life by itself
+  (10 s or 3 s, probe-findings 4), so EmergencyStop needs no game call.
+
+**Config.**
+
+* HUNT has no key of its own: it is on with `bt_sync` 1 or 2 in a two-game session and the partner's cap 0x400.
+* `bt_rain` (0 / 1) turns the rain spots on. It is built **0**, and flipped to **1** once `two-games-bt-trouble-dry` (leg D)
+  passes. If leg D fails, RS is dropped and HUNT ships with the markers only.
+
+**Log lines** (each starts `[bt] hunt:`, and each is rate-limited: 12 lines a second, 30 for edges):
+
+* Install / hello:
+  * `HUNT on (bt_sync N; ...); rain spots off|on (bt_rain=N)`
+  * `partner hello: HUNT both ways; rain spots here on|off (...)`
+* Byte checks:
+  * `byte checks: n/m ok; hunt ok|OFF, spot ok|OFF, rain read ok|OFF`
+  * `byte check FAILED: <group> (<site>): <what>`
+* Sender:
+  * `HUNT sent[ (test)]: UP (episode N) at (x y z) r R m, hands, members, level, strength[, gold][, PULLED (deep)] (seq S)`
+  * `HUNT sent[ (test)]: CLEAR (episode N, T s) (seq S)`
+  * `HUNT NOT sent ...`
+  * `HUNT episode N ended unsent (why)`
+  * `natural pull read here: ...` (logged only)
+  * `the hunter area is up but no local crowd was read`
+* Test:
+  * `test HUNT: episode N at (...): UP r 12 m, PULLED level 1.10 from 2 s to 6 s, CLEAR at S s`
+  * `test HUNT done after S s`
+  * `test HUNT ended (why)`
+  * `real-save rehearsal on|off: ...`
+* Receiver:
+  * `partner hunt UP at (...) r R m, hands, members, level (episode N[, gold][, vehicle][, test]), you D m; rain spot: slot K | none (why)`
+  * `partner PULLED level L (hands, strength, dir, episode N, deep, test)`
+  * `partner hunt CLEAR (episode N, T s[, test])`
+  * `partner hunt: no HUNT for 3 s (no CLEAR came): the hunt is taken as ended`
+  * `a bad HUNT (n B) dropped`
+* Spots:
+  * `rain spot on|on again: hunt at (...) r 50 m, you D m (slot K, life 10 s[, real save|, real-save rehearsal])`
+  * `rain spot held: <why> (...)`
+  * `rain spot off: <why> (hunt slot K, n refreshes; watching the list for its end | it never made a spot)`
+  * `rain spot gone: slot K (spots N) T s after its last refresh (hunt)`
+  * `rain spot still listed 15 s after its last refresh ...`
+  * `rain spot gone unverified ...`
+  * `rain spot call FAULTED (...): rain spots off for this run`
+  * `rain spot check -0 s|+10 s: raw V at the spot (...)`
+  * `<why>: N rain spots let go, M watched until gone (...)` (link lost, partner gone, the relay is off) or
+    `load: N rain spots let go, M no longer watched (...)`
+
+**Status** (in the BT status line): `hunt: send <why|ok> (ep, up, clear, unsent[, TEST]); got N bad N, partner UP|none; spots
+on|off|on (real-save gate): live, drain, made, held, gone`.
+
+### 26.3 The partner's tar, felt here (TF; bt_tar)
+
+**In plain words.** When the partner is caught in a BT hunt, their game sends HUNT (BTS1 type 11: the hunt's centre and radius,
+from bt_hunt). With bt_tar=1, this game puts one tar record of its own at that place into the hunter manager's tar list, so
+Sam sinks and slows in it as in a real hunt's tar. The record goes out when the hunt ends, and nothing else in the game is
+touched. There is no hunt here, no BTs, no pull and no fact call; the game only reads the record.
+
+**How.**
+- The hunter manager is hm = [0x147BECBD0]. Its tar list 0 is a count at hm+0xC0 (cap 10) and ptr[10] at hm+0xD0, edited
+  under the SRW lock at hm+0x130 (exclusive).
+- The record is this module's own 0x20 bytes, alignas(16): f64 pos[3], f32 radius at +0x18, f32 height at +0x1C (2.0).
+  The game's reader is FUN_1429BE1F0.
+- Sam is inside when the 2D distance is under max(r-0.5, 1.0) and z is under pos.z+height. There is no lower bound.
+  Sam's level is [Sam+0x54C0]+0x844 (smoothed); +0x848 is the per-update max.
+- Probe 26 (PF 13) measured it: 0.84 in 3.7 s, 1.0 inside, 0 in-tar fact calls, health and game state unchanged, and a clean
+  removal. List 1 is never used.
+- The record's centre is the HUNT's centre (x, y, z). Its radius is the HUNT's, clamped to 1..100 m. A moved centre (> 0.5 m)
+  or a radius change (> 0.25 m) is rewritten under the lock.
+
+**The gate (bt_tar_rules.hpp FeelGate, in TarFeelGate's order).** No record goes in, or the one that is in goes out, when:
+- bt_tar=0 here, or there is no HUNT source (bt_sync 2 with the partner's hello offering cap 0x400, or the hidden-run test op
+  bt_sync 12);
+- the hunt ended: a CLEAR, or no HUNT for 3 s;
+- a load, or Sam rides as a passenger;
+- this game is a real-save guest (host_save=0): refused while kRealSaveOk is false;
+- the hunter manager is not ready (+0x138), the tar is more than 300 m away, the game is not being played, or the list is full;
+- the link drops, the partner is gone, EmergencyStop runs, or the game takes the record out of its list (re-added after 1 s
+  if the gate lets it).
+
+**A real-save guest.** The record is world state, so a host_save=0 guest gets none at this stage. The guest logs "not felt"
+with the cargo read across the hunt. kRealSaveOk (bt_tar_rules.hpp) is a one-line change once the gate's reads show
+`cargo d 0.000` with at least one carried piece: the tar must not wear the cargo. The read that decides it is a clean one
+(Sam does not move while the record is in: tar-feel-echo leg B, the two-game guest), with the no-record control at the same
+spot at 0. Run `20261128-020913` (tar-feel-echo, every feel line passed) read `cargo d -632.983 (22 pieces)` across an
+episode in which dev_goto moved Sam 8 m (5 m down) into a record 7 m above him: not yet clean, but not 0, so kRealSaveOk
+stays false until a clean read and its control both read 0. The `+t` and record-out lines now carry the cargo read so far,
+the most-worn piece and how far Sam moved, to show when the wear comes.
+
+**Byte checks.** These are bt_probe_r31.cpp's tar group (kGTar, 8 sites), as they are. They run once, at the partner's hello
+when it offers cap 0x400 at bt_sync 2 (bt_tar.cpp OnHello), or on the first tick of a bt_sync 12 test (the echo). A failed site turns bt_tar off for the
+session with one line. The cargo read is the baggage manager [0x147BF4968] (shot_sync.cpp's check). If that check fails, the
+feature still runs and the cargo text says n/a.
+
+**Restores.** The record is taken out of hm+0xD0 under hm+0x130:
+- on the CLEAR or the quiet hunt, a load start, link loss, the partner gone, or bt_tar off;
+- on EmergencyStop (any thread, synchronous). The record is first moved 100 km down (its own memory, so never "inside"),
+  then the lock is tried 50 times, 1 ms apart, and the record is taken out of the list.
+- If the manager changed (a load) or the lock stayed busy, the record is moved down the same way and left. Its memory is this
+  module's static, so the game's reader never reads freed memory.
+
+### 26.4 Gazer reactions (GM: the gazer mirror, realized copies 25-60 m; bt_mirror)
+
+**What it does.** Say a gazer senses your partner in her game (it is NEAR her, reacting to her, or holding her). If your own
+game has a realized copy of that gazer 25-60 m from you, your copy reacts the same way. It agitates, takes her gazer's kind,
+and turns toward her body. Its own FOUND and catch never fire from that. Nearer than the gazer's trigger radius + 5 m (about
+25 m), your game's own gazer AI decides, as before. The mirror never starts a hunt or a GameOver in your game.
+
+Config key: `bt_gazer_mirror=0|1` (built 0; flip to 1 after the `two-games-bt-gazer` gate passes). It also needs `bt_sync`:
+at 1 it sends only, at 2 it also mirrors, and only in a two-game session.
+
+**Realized copies only** (round 31 PF facts 1-3, rerun 2):
+* A gazer has an entity and a DSGazerComponent only in state 2 (actor+0x24).
+* State 2 needs rain (ARMED) and this game's player within about 50 m. It is kept to 60 m.
+* A gazer that senses its own player is state 0 with NEAR.
+* Flags +0x1B4: 0x1 realized, 0x8 dead (bt_rules.hpp kFlagRealized / kFlagDead; GzBits sets kGzDead from 0x8 only).
+
+**Sender** (both roles, 4 Hz, game thread, reads only), from bt_world's census:
+* It sends this game's gazers that sense this game's player (NEAR, react or caught, and not dead), nearest first, at most 6.
+* ds.exe leaves NEAR (0x1000 in +0x1B4) set after its player walks away (first gate batch: GZST2 went on with the host 113 m
+  away, so the guest's mirror never ended). So a sensing bit counts only while this game's player is within the gazer's
+  trigger radius + 10 m (30 m when the trigger is unknown), by the module's own distance; the game's +0x204 is used only when
+  ours is unknown. Out of reach the bits are cleared, so a return is a new rise and FOUND goes out again. Once per change it
+  logs `[bt] mirror: sending loc L (field ..): flags .., you X m from it (game Y m, reach Z m)` or
+  `[bt] mirror: not sent: loc L: <why> (...)` (out of reach (its sensing bit is still set), it no longer senses you, or its
+  position is unreadable). bt_sync's own round 30 GZST census still trusts the bit as it is (not changed this round).
+* GZST2 (BTS1 type 12, 16 + 36n bytes) carries for each one:
+  * field, locator, state;
+  * mode +0x1A8, kind +0x214, action hash +0x200, blend +0x20C;
+  * the agitation (the graph var for a state-2 gazer, else 1.0 while it senses);
+  * edges (FOUND / CAUGHT, kept 1 s);
+  * the census position, the yaw, and the distance +0x204.
+* It is sent only while the partner's hello offers cap 0x800. Nothing is sent when nothing senses: the receiver's 2 s quiet
+  rule releases the mirrors.
+
+**Receiver** (game thread). It keeps the latest entry per field and locator (16 entries). A gate runs at 4 Hz per gazer
+(bt_mirror_rules.hpp `Gate`, which supersedes bt_rules.hpp's stage-1 GzMirrorGate) and checks, in order:
+1. bt_gazer_mirror is on, bt_sync is 2, and no load is in progress.
+2. An entry arrived within the last 2 s.
+3. The partner's gazer senses her.
+4. The gazer is live here and the world is being played.
+5. State 2 here ("held: not realized here" otherwise).
+6. Not dead here (flags 0x8 or health +0x180 <= 0), and it does not hold this game's player.
+7. A DSGazerComponent exists.
+8. The distance is known and at most 60 m.
+9. Hysteresis: on above trigger + 5 m, released below trigger + 2 m.
+10. At most 6 records.
+
+**The writes.** kind and the agitation pair are written right after the gazer's own update, inside bt_world's detour
+(`mirror::AfterUpdate`, slot kAfterMirror):
+* kind (+0x214) is the partner's kind byte. It needs no restore: the game rewrites it every update.
+* The agitation pair is comp+0x80 = 1 and comp+0x7C = 10.0, written while the partner's agitation is above 0.5. The gazer's
+  own pair is saved first.
+
+The yaw is written from Tick through game::TrySetTransform (bt_probe 23's proven call, on the same game thread). It turns the
+gazer toward the partner's body at most 90 deg/s, and every row of the rotation turns by the same angle.
+
+**Every write re-checks its target** first, because leaving state 2 frees the entity and the component while the actor keeps
+its id. The check: the actor id equals the mirrored one, the state is 2, the entity +0x68 is unchanged, and the component's
+back pointer comp+0x110 - 0xE8 is the actor. If it fails, nothing is written, the drops for that actor end, and the next Tick
+releases the mirror (`off: loc L (not realized here any more: ...)`).
+
+**The drops.** Two detours drop messages for mirrored gazers only. They run on any thread and use atomics only:
+* FUN_1429C49D0, DSGazerComponent MsgDsAiAction, drops FOUND 0x6221E6CB and catch 0x5A7E4B1D.
+* FUN_14299EFB0, the actor message, drops caught 0x682DFB3B.
+
+0x68A02F9F (the idle action) and everything else pass. A drop also requires the component's back pointer and the id to still
+match. Both hooks go in on the first mirror that writes, or neither does. If they are not in, every mirror turns only.
+
+**Per save kind.** The host and a sandboxed guest get kind, the agitation pair, the yaw and the drops. A real-save guest
+(host_save=0) gets only the yaw (`turn_only`, a cosmetic transform write): no kind (its react bit's effects, BB stress among
+them, are unread), no agitation and no drop hooks (her gazers keep their own FOUND and catch). `bt_sync 13 1` rehearses this
+in a hidden run.
+
+**Release and restore.** A mirror is released on:
+* 2 s with no GZST2 for it;
+* the gate going off (the partner's gazer no longer senses her, this game's player within trigger + 2 m, beyond 60 m,
+  dead here, and the rest);
+* the per-write re-check failing;
+* a death edge (bt_world event);
+* link loss or the partner gone;
+* a load;
+* EmergencyStop.
+
+The agitation pair is written back on a re-checked component and read back once a second, up to 5 s (`back loc L after n s:
+... back yes|back NO`). The drops stay on for that gazer until the pair reads back. A load writes nothing, since it frees the
+gazers, and clears the drops at once. EmergencyStop runs synchronously (no later Tick): the detours go straight through, the
+AfterUpdate slot is cleared, and each saved pair is written back on a re-checked component (guarded writes). The yaw is not
+restored: it is cosmetic and the game's own AI turns the gazer from there. 0 game-server writes.
+
+**Byte checks** (once, game thread): the agitation sites 0x1429D66C1 / 0x1429D66E1 / 0x1429D66EA / 0x1429D66D6 / 0x1429D66F6
+/ 0x1429D6701 and the actor's vt+0x10 slot 0x143DA5778 -> FUN_1422F8AA0 (core: the feature off when one fails), and the drop
+functions' prologues with their case compares 0x1429C4BC4 / 0x1429C4BCF / 0x14299F207 (drops: if one fails, every mirror turns
+only). One `byte check FAILED` line per failed group.
+
+**Log lines** (every one starts `[bt] mirror:` and goes through one 16-a-second budget):
+* `byte checks n/m ok; core ok|OFF, drops ok|OFF` (once), `byte check FAILED: <site>: ...`.
+* `GM on (bt_gazer_mirror=1, bt_sync N) ...` (Install), `partner hello: GZST2 offered (cap 0x800) ...|no GZST2 ...`.
+* `drop hooks in: ...` or `drop hook ... not in (...): every mirror turns only` (once). Review (crash 1): both targets are
+  byte-checked again right before the hooks go in (a bt_probe 16 / 21 / 22 hook made after the first Tick's check changes their
+  bytes: `byte check FAILED at the hook: ...`), and a hook is removed only when this module created it (MH_ERROR_ALREADY_CREATED:
+  `bt_probe holds it: left alone`).
+* `on: loc L kind K agit A (field F name), you D m from it (trigger T m), own +0x80 u +0x7C f[ (real save: turn only)| (turn only: why)]`.
+* `+S loc L: flags .. kind .. agit .. (idx ..) (+0x80 .. +0x7C ..) vis .. dist .., drops f/c/k, writes n, yaw writes n, hm140 0x.., state s, game 0x..`
+  (once a second for 10 s, then every 10 s).
+* `turn loc L: yaw a -> b (toward the partner's body at w, d m away; at most 90 deg/s)` (the first yaw write).
+* `calm loc L: the partner's agitation a: own pair written back` (the pair off while still mirrored).
+* `off: loc L (why): s s, writes n, yaw writes n, drops f/c/k, GameOver yes|no; own pair written back|the pair never written|...`.
+* `back loc L after n s: +0x80 u +0x7C f vs own u f: back yes|back NO|<stale>`, or `back loc L: not checked (why)`.
+* `held: loc L not realized here (...)` (once per change of reason, else every 10 s), `refused: loc L: why`.
+* `dropped FOUND f, catch c, caught k (mirrored gazers only)` (every 10 s while it changes).
+* `load: n mirrors taken back ...`, `link lost|the partner is gone: n mirrors taken back`, `emergency stop: ...`.
+* Status: `mirror: drops in|drops not in; on n (turn only n) back n; got n bad n, sent n, started n refused n, drops f/c/k; last L why`.
+
+### 26.5 Voidout blasts and craters (VB: the faded flash, CR: the crater record; bt_void)
+
+**What it does.** When your partner voids out, you see the blast at their place: the dome of the annihilation, and a flash
+that is full within 150 m of you and fades out over the next 450 m. So a voidout far away does not blind you. That part (VB)
+is cosmetic and runs on every save. A guest on her own real save (host_save=0) sees it only from 300 m out, until the near leg
+of the gate (with vehicles) has passed. When the voidout came from a catcher (a catcher's annihilation), the crater it leaves
+can also be added to the other world (CR). That happens only with bt_void=2, only on the host or a sandboxed guest
+(host_save=1), never on a real-save guest. A crater is permanent: it stays in the save it lands on. A gazer voidout (a BT
+grabbing you) leaves no crater in the base game (PF 17), so it never asks for one here.
+
+**CR is DROPPED this round.** In the first gate batch (run 20261128-012033-two-games-bt-void-crater) the crater record worked
+on the sandboxed guest (live after 8.1 s, its entity at +9 s, gone after the host's load), but 1.2 s after it went live the
+guest's game sent a game-server write, urn:otgc_set_mission_progress. No other hidden run has that write, and this round allows
+none. So bt_void_rules.hpp kCraterDropped is true: CraterGate runs its own rows first (a real-save guest still logs its own
+reason), then refuses every crater with "CR dropped this round (...)". bt_void=2 offers no kCapWorldApply and acts as 1. The
+append code stays but cannot be reached; setting kCraterDropped to false turns it back on, once a crater is shown to make no
+write. That run also played a 150 m blast at the same spot, so two-games-bt-void now checks for no OTGC write right after its
+150 m leg: a write there would mean the blast, not the crater, was the cause.
+
+Module: native/mod/bt_void.cpp (namespace st::bt::voidout); its pure glue is bt_void_rules.hpp; the gates are BlastGate,
+FlashFade and CraterApplyGate in bt_rules.hpp. Wire: VOID2 (BTS1 type 13, 60 B) on channel 6; VOID v1 is still sent by
+bt_sync. Caps: kCapVoid2 0x1000 (bt_void >= 1, bt_sync >= 1), kCapWorldApply 0x2000 (bt_void 2, bt_sync 2, the host or a
+sandboxed guest; not offered while CR is dropped).
+
+Config: `bt_void=0|1|2` (default 1: the blast only; 2 would add the crater record, but it is DROPPED this round, so 2
+acts as 1 and its install line says "the crater record DROPPED this round (refused: bt_void 2 acts as 1)"), `bt_void_flash_m` (default 150, 0..5000: the
+distance the flash stays full; FadeRange is always 450).
+
+**Sender (game thread).**
+* Every voidout of this game (bt_sync's FUN_14299B1B0 detour, drained in SyncTick) goes as VOID2: source (VoidSource), reason,
+  flags gazer / baggage / far, crater radius 0, the distance to Sam, a counter id and the world print (esync::Gate().guids).
+  It goes only to a partner whose hello offers kCapVoid2.
+* A catcher's crater: a MinHook pass-through on the catcher crater FUN_142A003D0(cm, id). It goes in at the first tick that can
+  send. Inside the call (any thread) it only reads, guarded: the catcher record by id (position +0x68, class +0x28) before, and
+  after it the pending crater record whose generation (cm+0x2A8) the call made (position +0x18, radius +0x30, flags +0x58). It
+  hands that to the game thread through a 4-slot ring. The tick sends it as a VOID2 with source 5 (catcher annihilation),
+  flags catcher + crater wanted, the class + 1 and the record's radius (default 107 when unread). If the generation did not
+  move, nothing is sent.
+* If the same catch also ran FUN_14299B1B0, the partner gets two VOID2s; it plays one blast (the second is a repeat) and
+  still gates the crater.
+
+**Receiver: the blast (game thread).**
+* Each VOID2 is logged (`partner VOID2 #n: ...`) and queued (4 deep). It is dropped as a repeat when a queued, played or local
+  voidout lies within 5 s and 100 m (a corpse that voided out in both worlds).
+* Each tick the queue head goes through BlastGate. bt_sync 1 here: dropped (logged only). bt_void 0, a bad position, a load or
+  10 s in the queue: dropped. A real-save guest (or the stand-in): dropped within 300 m or at an unknown distance. Held while
+  the world is not played, while another partner blast plays, or while the gazer manager has no voidout resource (+0x68).
+* Play is bt_probe 29's sequence without the GameOver: the resource [[0x147BEBEC0]+0x68], its far blast (+0x30) when the
+  distance is at least its far distance (+0x54), else the near one (+0x28). Then vt+0x80(res, {pos, identity rotation}),
+  FUN_14234F3E0(e, 0) and the world's vt+0x18(world, e, 0, 0, 0). Then a 24-byte ref node of our own (FUN_14191C790), so the
+  entity is ours to let go.
+* The flash: while the 9 s window is open, a pass-through detour on the effector creator FUN_141CAD420 (put in at the first
+  blast) checks the resource's GUID (1d2c4389-a492-de42-85f4-f43997bf6efb at +0x08) and writes FadeStart bt_void_flash_m /
+  FadeRange 450 at +0x28 / +0x2C. Before that it saves what was there (11500 / 11800 as shipped; when ours are already there,
+  it saves the shipped values).
+* At 9 s the window closes and the saved values go back, but only while ours are still there (a resource freed or reused by a
+  load is left alone). At 12 s the near check compares four readings with those taken at play: Sam's health (within 0.5),
+  the GameOver flow counter (hidden runs: bt_sync's FlowGate), the hunter area hm+0x140, and the GameOver bit. At 16 s the
+  ref is released (FUN_14191C810; a no-op when the game already cleared the node).
+
+**Receiver: the crater (game thread).** A VOID2 that wants a crater is queued (4 deep) and goes through CraterApplyGate,
+with the gazer row pinned off. The rules:
+* bt_sync 2 and bt_void 2 here.
+* A catcher voidout only.
+* A guest: only on a sandboxed save. The host: only from a sandboxed guest, with equal world prints, and only when the BT
+  records compare equal.
+* A test crater only on a sandboxed save.
+* Not after 60 s. Refused in a load. Held while the world is not played or Sam rides as a passenger.
+
+Apply is bt_probe 30's append to the catcher manager's pending list (cm+0x290 count / +0x294 cap / +0x298 data, 0x60-byte
+records), under its lock cm+0xE8:
+* the generation is ++cm+0x2A8, and the list grows through FUN_142A6A260 when it is full;
+* the record holds pos +0x18, radius +0x30, delay 8.1 s +0x44, gen +0x48, area FUN_14262A8C0([0x147BE6318]) & 0xFFFF +0x50,
+  a random yaw +0x54, and flags +0x58 (bit 0 IsDisableCrater when Sam is within r + 10 m);
+* the dirty flag cm+0x2AC is set.
+
+The game makes the record live after 8.1 s. At +9 s the module logs it from the live list (cm+0x280, active +0x3C, the entity
+[rec] - 0x20). After the next load ends, it looks for the record by place (1 m) and radius from 8 s to 30 s and logs
+"kept" or "gone". This is information only: a crater is never taken back.
+
+**Byte checks** (once, before first use; a failed group turns off only what needs it, with one FAILED line):
+* blast: the voidout's sites 0x14299B1F6..0x14299B2E3, FUN_14234F3E0, the ref add / release, the RIP targets, the identity
+  rotation 0x144591D70 and the FUN_14299B1B0 prologue (VoidPrologueOk).
+* fx: FUN_141CAD420 and its only call 0x141BB69D0.
+* crater: the lock, generation, radius 107 / delay 8.1 (code and data), the area id, the pending append and grow, the record
+  slot, the dirty flag and the merge FUN_142A74D90.
+* catcher hook: FUN_142A003D0, its only call 0x142A57C3F, and the catcher record's key, class and position reads.
+
+The blast needs both blast and fx (no blast without the faded flash). The crater add needs crater plus bt_sync's catcher
+manager. The catcher crater send needs crater and catcher hook. When bt_probe hooked FUN_141CAD420 or FUN_142A003D0 first in
+the session, MinHook refuses ours: one line, and that part stays off.
+
+**Restores.**
+* Load start: both queues and the catcher ring are dropped; a playing blast closes its window (fade restored) and releases its
+  ref.
+* Link lost or partner gone: the queues are dropped and the window closed; the ref goes at 16 s as usual.
+* EmergencyStop (synchronous, any thread): both detours pass straight through, the fade is restored (waiting up to 200 ms for a
+  write in flight), and the ref is released when on the game thread (else the static node stays and the game clears it with
+  the entity).
+* A fault in the blast or the ref call ends partner blasts for the session; a fault in the crater append ends craters.
+* Nothing is ever written to the game server.
+
+**Log lines** (all `[bt] void: ...`, at most 24 at once and 1 a second after that; the overflow is counted in the status):
+* `byte checks n/m ok: blast ok|OFF, fx .., crater .., catcher hook ..`, `byte check FAILED: <group>: <site> (<effect>)`
+* `hook FUN_141CAD420 (the effector creator): in (pass-through)` (or MinHook's status)
+* `partner hello: VOID2 yes|no, craters applied there yes|no`
+* `local voidout at (x y z) (source, reason, flags 0x..): VOID2 #n sent`
+* `catcher crater gen g at (..) r R (class, its pending record): VOID2 #n sent`
+* `partner VOID2 #n: <source> at (..), D m from the partner, flags 0x.., crater r R`
+* `partner voidout blast at (..) D m from you: far|near resource, flash fade 150/450 m (source s, VOID2 #n, entity 0x..)`
+* `partner voidout blast held: <why>` / `partner voidout blast dropped: <why>`
+* `voidout flash window closed (9 s): fade restored (FadeStart 11500 FadeRange 11800)` (or `no effector made in the window`)
+* `partner blast near check +12 s (D m from you): unchanged` (or `CHANGED: health a -> b, ...`)
+* `partner voidout blast done (16 s): ref released`
+* `crater record added: (..) r R (pending i, delay 8.1 s, area A, flags f, gen g; source, VOID2 #n)` /
+  `crater not added: <why>` / `crater held: <why>`
+* `crater record active +9 s: gen g, active a, entity 0x..`
+* `crater record kept after the load: ..` / `crater record gone after the load: .. (a host-held guest reloads the host's save)`
+* `EmergencyStop: detours through, fade .., ref ..`
+
+Status (`[bt] sync status`): `void: bt_void=N VB on|OFF|DEAD CR on|off|DEAD|DROPPED; rx, sent, blasts, craters, dropped, refused, cat
+calls, log dropped`.
+
+### 26.6 Catchers (CS: the partner's catcher state and edges; RW crystals DROPPED; bt_catcher)
+
+**What it does.** When a catcher (the big tar BT: Quad / lion, Hunter and the rest) rises in your game, your partner sees it:
+a log line, the catcher marker with its health bar over it, and (with bt_rain=1) bt_hunt's rain spot round it. When it dies or
+sinks, the partner's copy goes. Nothing is spawned in the partner's world and nothing is written to either game: it is a view
+of your fight.
+
+**Sender (game thread, 4 Hz).** bt_catcher.cpp reads the catcher manager [0x147BEE060] (through bt_sync's kCatcher group):
+count at +0x88, records at +0x90, 0x110 bytes each. Per record: key +0x20 (the actor id the notify matches), class u8 +0x28
+(sent as class+1), pos f64[3] +0x68 (z up), bar f64[3] +0xB0 (about 7 m over pos), gone byte +0xF0, hp f32 +0xF4, sub +0x100.
+A record is sent only once it has a sane, non-zero position (a new one reads (0,0,0) for about a second). Each pass sends up
+to 4 records in one CATCH (BTS1 type 14, 16 + 32n bytes, cap 0x4000): the edges first, then the live ones in turn.
+
+**Edges.** SPAWN when the notify FUN_142A1C0E0 fires hash 0x63DB9ED5, or when the record diff first sees a positioned active
+record. GONE when the notify fires 0x2FC57393, or when a record seen active goes inactive or leaves the list. DEFEAT
+0x4C8F5A9D and ANNIHILATE 0x033DB880 are mapped too, but no probe ever produced a defeat, so they are unproven. The notify
+hook is a MinHook pass-through, put in lazily on the first positioned record. It only pushes {id, hash, tick} into a
+lock-free ring, which the game thread drains. If its byte checks fail, or bt_probe's hook on the same function went in first,
+the record diff alone gives the edges, and one log line says which.
+
+**Receiver (game thread).** Each CATCH entry updates a view of up to 8 partner catchers. It logs SPAWN, each 10-point hp step
+and GONE. An entry with no CATCH for 3 s expires. The primary catcher gets the marker and the spot; it is the one in combat
+first, then the lowest hp, then the oldest.
+* The marker goes 3 m over its bar (btmarks::Catcher).
+* At bt_sync 2 it gets bt_hunt's rain spot: SpotWant(catcher, pos, 130 m). The wire carries no radius, so 130 m is fixed.
+* With bt_markers=0 a HUD line shows instead ("Your partner is fighting a catcher (lion) 63%"). It shows again at every
+  20-point step, inside the BT sync's one-toast-per-8-s limit.
+
+**RW (crystals): DROPPED this round.** REWARD (type 15, cap 0x8000) is never offered. A received one is refused with one log
+line. bt_crystals stays 0.
+
+**Byte checks (once, before any use).**
+* The records group: key +0x20 at 0x142A1C11F, class at 0x142A1C18C, pos +0x68 at 0x142A87950, bar +0xB0 at 0x142A7CDFF,
+  hp +0xF4 at 0x142A7CE1F and sub +0x100 at 0x142A7CE38. A failure turns the catcher sync off.
+* The notify group: the notify entry 0x142A1C0E0, its record id 0x142A1C16F, the GONE hash 0x142A1C1F4 and the SPAWN hash
+  0x142A1C35C. A failure turns only the hook off.
+
+**Config.** `bt_catcher` (default 1, kept): 0 turns the module off, so the hello offers no CATCH cap and nothing is sent or
+shown. Sending also needs bt_sync >= 1, a two-game role and the partner's hello offering cap 0x4000. The rain spot also needs
+bt_sync 2 and bt_hunt's own gate (bt_rain, RainSpotGate). `bt_crystals` stays 0.
+
+**Restore.** Nothing is written to the game, so there is nothing to put back. The module's own state is cleared as follows.
+* On a load the sender's tracks are dropped (the partner's view expires in 3 s) and the test catcher ends.
+* On a load, link loss or partner gone the view is cleared, the trouble markers are cleared (btmarks::ClearTrouble) and the
+  rain spot is dropped (it dies within its life).
+* With the feature off nothing starts. When bt_sync drops below 1 the sending stops and the partner's view expires.
+* EmergencyStop (any thread, synchronous) sets the detour to pass straight through and stops all sending. The marker expires
+  3 s after its last refresh and bt_hunt's spot within its life, both by themselves.
+
+**Log lines** (all rate-limited):
+* `[bt] catcher: byte checks n/m ok; records ok|OFF, notify ok|OFF`; `[bt] catcher: byte check FAILED: <site>: ...`;
+* `[bt] catcher: notify hook FUN_142A1C0E0 in (pass-through; ...)` / `[bt] catcher: notify hook not in: <why>; the record diff alone`;
+* `[bt] catcher: the partner sends and takes CATCH (caps 0x....)` (or `takes no CATCH`);
+* sender: `[bt] catcher: SPAWN|GONE key XXXXXXXX <class> (<look>) at (x y z), hp n% (...)`,
+  `[bt] catcher: notify id ... hash 0x... (<name>, thread tick|other)`, `[bt] catcher: CATCH sent (n entries: ...)`,
+  `[bt] catcher: CATCH not sent (...)`, `[bt] catcher: load: n tracked catchers dropped (...)`;
+* receiver: `[bt] partner catcher: Quad (lion) SPAWN at (x y z), you d m, hp 100% (key ...)`,
+  `[bt] partner catcher: Quad (lion) hp 60% at ...`, `[bt] partner catcher: Quad (lion) GONE (key ...)`,
+  `[bt] partner catcher: ... expired (no CATCH for 3 s, ...)`,
+  `[bt] partner catcher: n taken back (<why>): markers and the rain spot gone`, `[bt] catcher: a bad CATCH (n B) dropped`,
+  `[bt] catcher: CATCH ignored: bt_catcher=0 here`;
+* rain spot: `[bt] catcher: rain spot wanted: ... r 130 m ...`, `[bt] catcher: rain spot refused by bt_hunt (...); asked again in 10 s`,
+  `[bt] catcher: rain spot dropped (<why>)`, and bt_hunt's own `[bt] hunt: rain spot on: catcher at (...) r 130 m`;
+* HUD (markers off): `[bt] catcher: HUD: Your partner is fighting a catcher (lion) 63% (...)`;
+* RW: `[bt] catcher: crystals not given: not built this round (REWARD ...)`.
+
+### 26.7 Kill look, respawn and sky (bt_extra)
+
+**What it does.** Three small parts, all built off (bt_kill_look=0, bt_respawn=0, bt_sky=0) until their gates pass.
+* The kill look: when your partner kills a BT, your copy dies with the kill reason 0x5414860D, which gives the field's count
+  and the dead bit and leaves your stats alone, instead of the rain-gone reason 0x01322187.
+* RESPAWN: when the host's game respawns a field's gazers, a sandboxed guest respawns her copy of that field too.
+* SKY: while your partner is in BT trouble near you, your sky shows the BT start look.
+
+Every log line starts "[bt] extra:". Each part keeps its own budget of 8 lines per 10 s (btrules::extra::LineBudget). When
+lines were dropped, the next one ends "(n lines dropped before)".
+
+**Byte checks** (the first BT tick after Install, read only). One line:
+`[bt] extra: byte checks: n/m ok; kill look ok|OFF, respawn ok|OFF, sky ok|OFF`.
+A failed site logs `[bt] extra: byte check FAILED: <site> (<part> off)` and turns off only that part.
+* Kill look: the four stats sites, plus the stats-object RIP 0x142995F35 -> 0x147BFD960.
+* Respawn:
+  * the prologue of EnableRespawnGazers 0x1429A76D0;
+  * its message build at 0x1429A7716 (`BA 08 .. 69 55 30 58`: actor type 8, message 0x58305569);
+  * the handler's case at 0x14299F1E6 and its scene compare and flag set at 0x14299F3BE (`+0x3A8 == msg+0x18`, then
+    `+0x1B4 |= 0x4000000`);
+  * GetUUIDHashOfGazerScene 0x1429A71E0 (crc32c over the 16 GUID bytes);
+  * the RIPs to the registry 0x147BBB8C0 and the broadcast FUN_1422FA510;
+  * bt_world's +0x3A8 scene read.
+* Sky: SetStartControlFlags FUN_142E1FED0 and its RIP to 0x147BF83B8, plus the bit's only reader at 0x142E1D6B3
+  (`F6 87 18 65 00 00 01 74 07 C6 87 08 65 00 00 01`).
+
+**The kill look** (bt_kill_look, default 0).
+* bt_sync.cpp's partner-kill apply (ProcessKills) asks `extra::KillLookReason()` right before btworld::ArmKill.
+* The answer is 0x5414860D only when all of these hold: bt_kill_look=1, the stats checks passed, this is not a real-save game,
+  and there was no EmergencyStop. Otherwise it is 0, which keeps 0x01322187.
+* It is never 0x74FB05EE or 0x523D4DC0. Those credit the local player's stats (+1 / +1); a static_assert keeps them out.
+* The first armed kill opens a window and reads stats 0x79 and 0x7A. They are read from [0x147BFD960]+0x10: the value at
+  +0x4F8+id*4, XOR the masks at +0x8C8+((id>>3)&7)*4 and +0x8A8+(id&7)*4.
+  `[bt] extra: kill look armed: reason 0x5414860D (stats 0x79 a 0x7A b)`
+* Each applied kill: bt_world's event, tag mirror, applied, with our reason. It records the flags after the update, the state
+  and the entity.
+  `[bt] extra: kill applied: loc L (id I) reason 0x5414860D killer K, flags 0xF, realized yes|no (state S, entity 0xE), death edge yes|no`
+  "realized" is flag 0x1 or state 2. The dead bit is 0x8 (bt_rules.hpp kFlagRealized 0x1, kFlagDead 0x8 since stage 5).
+* 5 s after the last applied kill, or 15 s after the arm when none was applied:
+  `[bt] extra: kill look (5 s after the last applied kill): n applied (realized m), stats d D79 / D7A (0x79 a -> b, 0x7A c -> d)`
+* A load drops the window without a stats read: `kill look window dropped (a load): ..`.
+* Nothing to restore: the kill is the game's own update kill (bt_world's ArmKill). The real-save refusal stays KillApplyGate's.
+* **The guard for leg K:** KillGuard (bt_rules.hpp) allows only state 0 and refuses flags & 0x9, so a realized gazer (state 2,
+  flag 0x1) took no partner kill. KillGuard now has `allow_realized`: state 2 is taken and only the killed bit 0x8 refuses.
+  It is passed only while the kill look is on: bt_sync's KillApplyGate input asks `extra::KillLookOn()` (KillLookReason's
+  answer without arming its window), and bt_world's KillNow passes it only for a slot armed with `allow_realized` (review: keyed
+  on that ArmKill flag, not on the reason 0x5414860D, which bt_probe 36 code 3 arms too): bt_sync's partner-kill arm passes it
+  when KillLookReason() is not 0, every other caller (bt_probe 36 included) false. With
+  bt_kill_look=0 (the default) every kill keeps the state-0 rule. Whether the update's kill path gives a state-2 gazer its
+  death is unprobed: leg K is that test (FAULTED / FATAL-GUARD in its nologs).
+
+**RESPAWN** (bt_respawn, default 0; BTS1 type 16, 24 B: scene hash | field id | sender ms; cap kCapWorldApply 0x2000).
+* **The host.** A MinHook pass-through detour on EnableRespawnGazers 0x1429A76D0(scene).
+  * It goes in once: bt_respawn=1, the host, bt_sync 2, not loading, checks ok.
+    `[bt] extra: respawn hook in (EnableRespawnGazers FUN_1429A76D0, pass-through: ..)`, or `respawn hook FAILED: <MinHook status> ..`.
+  * The detour only reads: it takes crc32c over scene+0x98 under SEH, pushes field<<32|flags into a lock-free 16-slot ring, and
+    calls the original. If all 16 slots are full: `respawn: n calls lost`.
+  * The tick drains the slots. The scene hash is GetUUIDHashOfGazerScene's crc32c over the scene GUID, so it is the same
+    value as the census field id (btrules::GuidHash).
+  * RespawnSendWhyNot gates the send: bt_respawn, the checks, the host, bt_sync 2, the partner's hello, a guest partner at
+    bt_sync 2, her cap 0x2000 (review, wire 2: an older build such as v0.44 decodes no type 16, and a real-save guest applies
+    none: `not sent: the guest applies no respawn (no cap 0x2000)`), a field read, and 5 s since that field's last send.
+    `[bt] extra: respawn on (host): field F (natural|test, bt_sync 11): NAME; sent to the guest (seq n; she applies: ..)`
+    or `..; not sent: WHY`.
+  * The host's own world is never written: the game made the call, the detour passes it through.
+* **The guest.** OnMsg checks the size and logs
+  `[bt] extra: RESPAWN received: field F NAME (scene hash H[, NOT the field id]), host ms t`.
+  * It queues up to 4, one per field; a 5th logs `respawn not applied: field F: 4 pending already`.
+  * Each tick, RespawnApplyGate decides:
+    * refuse on bt_respawn 0, not the guest, a real save (host_save=0, or the test stand-in), 60 s held, or a load;
+    * hold while not playing, or while the field's scene is not loaded here;
+    * a second RESPAWN for the same field within 10 s is refused.
+  * The scene must match: a gazer of that field whose +0x3A8 (the handler's compare) is its own locator's scene
+    [[actor+0x18]+0x80], and whose scene GUID hashes to the field.
+  * On apply it calls FUN_1429A76D0(scene) on the game thread under SEH:
+    `[bt] extra: respawn applied: field F (EnableRespawnGazers 0x1429A76D0 on scene 0xS, NAME; n gazers of it here, the respawn flag on k before; x s after it came)`
+    then 2 s later: `respawn after 2 s: field F: the respawn flag 0x4000000 on n of m gazers here`.
+  * Other outcomes: `respawn held: field F: WHY`, or `respawn not applied: field F: WHY`.
+  * A fault logs `respawn apply FAULTED: ..` and turns the apply off for the run.
+* **Restore:** none for the respawn itself, which is world state the game owns.
+  * A load, link loss, the partner gone, or the feature off drops the pending queue, the field rings, the slots and the 2 s
+    follow-up: `respawn: n pending dropped (why)`.
+  * EmergencyStop sets the detour to pass through (atomics only).
+* The guest's hello offers cap 0x2000 only on a sandboxed guest at bt_sync 2 with bt_respawn=1 and the respawn checks passed.
+  The host sends whatever the caps say, and a real-save guest logs her refusal.
+* The side effects of the call are unprobed. The default goes to 1 only after the gate and one natural respawn on the host.
+
+**SKY** (bt_sky, default 0; kSkyRealSaveOk false).
+* SkyWhyNot gates it:
+  * bt_sky=1, the checks, and not a real-save guest (until bt-sky-sun passes);
+  * a partner, not loading, playing, and not carried;
+  * the partner's trouble is HUNTED, PULLED, CAUGHT or a catcher (kTrHunted..kTrCatcher);
+  * the partner is within 150 m.
+* While all of that holds, it calls SetStartControlFlags FUN_142E1FED0(1) every 0.1 s on the game thread under SEH. The call
+  sets +0x6518 |= 1 and a 0.2 s timer at +0x651C; the bit's only reader (0x142E1D6B3) forces +0x6508 = 1 for that update.
+  `[bt] extra: sky on: the partner's KIND N m away (6508 u 6518 0xX)`
+* **Restore:** stop calling.
+  `[bt] extra: sky off (why): n calls (the bit's 0.2 s timer clears it)`
+  then 1 s later: `sky after 1 s: 6508 u 6518 0xX (bit 0 cleared by the game | bit 0 still set: cleared by the module | the clear FAILED)`.
+  The module's clear is a guarded write that takes back only our own bit 0, as bt_probe_r31's SkyEnd does.
+  The weather update FUN_142E1D600 zeroes +0x6508 at the start of each update (0x142E1D66F) and sets it again from bit 0, so a
+  read in the tick of the clear (bt_probe 34's `sky done` line) still shows 6508 1; the next update's read (the after-1-s line,
+  or a `bt_probe 15` dump) shows 0. The game clears bit 0 itself when the +0x651C timer runs out (0x142E1DC63).
+* A load, link loss, the partner gone, the feature off and EmergencyStop all stop the calls. EmergencyStop writes nothing.
+* A fault logs `sky call FAULTED (..): the sky is off for this run`.
+
+**Status line** (in "[bt] r31 status:"):
+`extra[ (stopped)]: kill look on|off|OFF (n applied, m realized[, stats d x/y]); respawn hooked|on|off|OFF (tx a rx b ok c no d nat e[, FAULTED]); sky calling|on|off|OFF (n calls)`.
+With every key 0 it reads `extra: off (bt_kill_look=0 bt_respawn=0 bt_sky=0)`.
+
+**Config keys** (stranded_together.ini, [bt]):
+* `bt_kill_look=0`. It goes to 1 only if two-games-bt-kill-look shows the realized gazer's death.
+* `bt_respawn=0`. It goes to 1 after two-games-bt-kill-respawn passes and one natural respawn is logged on the host.
+* `bt_sky=0`. It goes to 1, together with kSkyRealSaveOk = true, only if bt-sky-sun passes. Otherwise SKY is DROPPED and its
+  code is removed.

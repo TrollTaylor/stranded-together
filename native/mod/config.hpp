@@ -471,6 +471,32 @@ struct Config {
     // own rain-gone kill, no stats), only under the apply rules (a guest on a sandboxed save; the host only from a host-save guest
     // with the same records) and never in a load, menu, cutscene, with Sam carried, or within 15 m of this game's player.
     int bt_kill = 2;
+    // Round 31 BT (bt_rules.hpp; each 0 = off; a malformed / negative value 0, a larger one the key's most):
+    // bt_weather=0|1|2 (default 2): 1 = the host's forecast schedule sent and compared only (WXROW / WXBEAT); 2 = also applied on a
+    //   sandboxed guest (never on a real-save guest, never in a load or EmergencyStop; restored when a rule stops holding).
+    // bt_rain=0|1 (default 1): the partner's BT areas raise local timefall spots here (a real-save guest sees them, never feels them).
+    // bt_tar=0|1|2 (default 1): the partner's hunt (HUNT) felt here as tar near this game's player; 2 also the deeper pull.
+    // bt_gazer_mirror=0|1 (default 1): a gazer the partner senses, mirrored here when this game's player is far enough from it.
+    // bt_void=0|1|2 (default 1): the partner's voidout blast seen here (VOID2); 2 also the crater record on a sandboxed guest.
+    // bt_void_flash_m (default 150, 0..5000): the distance a voidout's flash stays full; it fades out over the next 450 m.
+    // bt_catcher=0|1 (default 1): catcher spawn / defeat / annihilate edges sent (CATCH). bt_crystals=0|1 (default 0): a catcher's
+    //   crystals given to the partner (REWARD; never on a real-save guest). bt_respawn=0|1 (default 1): the host's respawn told to a
+    //   sandboxed guest (RESPAWN). bt_sky=0|1 (default 0): the tarred sky with the partner's catcher. bt_kill_look=0|1 (default 1).
+    int bt_weather = 2;
+    int bt_rain = 1;
+    int bt_tar = 1;
+    int bt_gazer_mirror = 1;
+    int bt_void = 1;
+    int bt_void_flash_m = 150;
+    int bt_catcher = 1;
+    int bt_crystals = 0;
+    int bt_respawn = 1;
+    int bt_sky = 0;
+    int bt_kill_look = 1;
+    // bt_test_real_save=0|1 (default 0; round 31; a guest in a hidden run only, else ignored): this guest counts as on her own
+    // real save (host_save=0) for the BT sync and its feature modules (no RESET, kill, forecast, crater, respawn or tar applied;
+    // the hello without kCapResetApply). The gates' host_save=0 legs use it: a hidden run always redirects the saves.
+    bool bt_test_real_save = false;
     // self_voice=auto|sam|mute (docs/audio-research.md section 9, Phase 1; self_voice.cpp): Sam's own voice (spoken
     // lines, grunts, efforts, breathing) on THIS player's game. auto = muted when this player's character
     // (my_character; the host is always sam) is not Sam, and the cargo menu's figure while it shows that character;

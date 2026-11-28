@@ -1,0 +1,53 @@
+# Round 31 stage 8 gate (the round 31 build spec, Stage 8; module bt_extra): leg R, the host_save=0 leg (respawn not applied).
+# The host_save=0 leg: the respawn must be refused, "respawn not applied: .. this game plays on its own real save".
+# Hidden runs always redirect saves (automation::SavesRedirected), and launcherini local-test writes host_save=1, so the guest
+# acts as a real-save guest through bt_sync 11 2 1 (bt_extra's stand-in: restrictive only, it can only refuse; the gate's
+# sandboxed flag is then false exactly as on host_save=0). Her hello still offers cap 0x2000 (the stand-in is per gate, not per
+# hello): the host sends, she refuses. A true host_save=0 run needs the launcher's Online ini (a manual check).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-kill-respawn-realsave -SeedSaves complete-100 -GuestSeed profile-only -Id round31-bt-extra
+# From the launcher-generated ini (launcherini local-test) plus the key under test. NOTE: that file is host_save=1 (a sandboxed
+# guest) and testenv refuses an added host_save line, so this host_save=0 leg needs its own mechanism (the builder's call).
+# covers: bt-extra
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini bt_sync=2
+ini bt_respawn=1
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[bt\] sync: bt_sync=2 as the host
+@guest waitlog 5 \[bt\] sync: bt_sync=2 as the guest
+waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role guest
+@guest waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role host
+waitlog 30 \[bt\] extra: byte checks: [0-9]+/[0-9]+ ok; kill look (ok|OFF), respawn ok
+@guest waitlog 30 \[bt\] extra: byte checks: [0-9]+/[0-9]+ ok; kill look (ok|OFF), respawn ok
+waitlog 10 \[bt\] world byte checks: [0-9]+/[0-9]+ ok; hook ok, kill ok
+@guest waitlog 10 \[bt\] world byte checks: [0-9]+/[0-9]+ ok; hook ok, kill ok
+waitlog 60 \[bt\] extra: respawn hook in \(EnableRespawnGazers FUN_1429A76D0
+@guest action bt_sync 11 2 1
+@guest waitlog 5 \[bt\] extra: test: this game acts as a real-save guest for the RESPAWN gate \(bt_sync 11 2 1\)
+@both action dev_god 2
+wait 3000
+goto bt-field-mknot-s
+@guest goto -1046 36 0
+wait 15000
+waitlog 20 \[bt\] field compare #[0-9]+: records equal .*bt211_01
+@guest waitlog 20 \[bt\] field compare #[0-9]+: records equal .*bt211_01
+action bt_sync 11 0 0x390B7DE4
+waitlog 5 \[bt\] extra: respawn on \(host\): field 390B7DE4 \(test, bt_sync 11\): .*sent to the guest
+@guest waitlog 10 \[bt\] extra: RESPAWN received: field 390B7DE4
+@guest waitlog 10 \[bt\] extra: respawn not applied: field 390B7DE4: this game plays on its own real save \(host_save=0\): no respawn \(bt_sync 11 2: the test's real-save stand-in\)
+wait 3000
+@guest nolog \[bt\] extra: respawn applied
+@guest action bt_sync 11 2 0
+@guest waitlog 5 \[bt\] extra: test: this game no longer acts as a real-save guest
+nolog \[bt\] extra: byte check FAILED
+@guest nolog \[bt\] extra: byte check FAILED
+nolog FAULTED
+@guest nolog FAULTED
+nolog \[bt\] sync off
+@guest nolog \[bt\] sync off
+nolog \[bt\] sync: a bad BTS1
+@guest nolog \[bt\] sync: a bad BTS1

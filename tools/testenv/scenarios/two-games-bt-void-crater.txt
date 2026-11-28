@@ -1,0 +1,60 @@
+# Round 31 stage 6 gate (the round 31 build spec, Stage 6; module bt_void): leg 2 (CR) -- CR DROPPED this round.
+# The first gate batch (run 20261128-012033-two-games-bt-void-crater) added the crater on the sandboxed guest (live at +8.1 s,
+# its entity at +9 s, gone after the host's load as expected), but 1.2 s after it went live the guest's game sent a game-server
+# write, urn:otgc_set_mission_progress (the run failed on game_server_writes; no other of 213 hidden runs has it). bt_void_rules.hpp
+# kCraterDropped: CraterGate now refuses every crater (after the gate's own rows), bt_void 2 offers no cap 0x2000 and acts as 1.
+# This gate checks that it stays off and harmless: bt_void=2 on both, a catcher-flagged test VOID2 at 600 m each way (600 m: the
+# blast alone made no write in two runs), the blast played, the crater refused with the drop reason, no record, no OTGC WRITE.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-void-crater -SeedSaves complete-100 -GuestSeed profile-only -Id round31-bt-void
+# From the launcher-generated ini (launcherini local-test: the launcher's Local test already writes host_save=1, a sandboxed
+# guest; testenv refuses an added host_save line with launcherini) plus the keys under test.
+# covers: bt-void
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini bt_sync=2
+ini bt_void=2
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[bt\] sync: bt_sync=2 as the host
+@guest waitlog 5 \[bt\] sync: bt_sync=2 as the guest
+waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role guest
+@guest waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role host
+waitlog 5 \[bt\] void: bt_void=2, flash fade 150/450 m: the partner blast; the crater record DROPPED this round
+@guest waitlog 5 \[bt\] void: bt_void=2, flash fade 150/450 m: the partner blast; the crater record DROPPED this round
+waitlog 5 \[bt\] void: partner hello: VOID2 yes, craters applied there no
+@guest waitlog 5 \[bt\] void: partner hello: VOID2 yes, craters applied there no
+@both action dev_god 2
+wait 3000
+# ---- the host's catcher-flagged test, 600 m from the guest: the blast there, the crater refused
+action bt_sync 9 600 3
+waitnew 5 \[bt\] void: test VOID2 #[0-9]+ at .*: (599|600|601) m from the partner's body.*a catcher crater r 40 wanted: sent
+@guest waitlog 10 \[bt\] void: partner voidout blast at .* (59[5-9]|60[0-5]) m from you: far resource, flash fade 150/450 m
+@guest waitlog 10 \[bt\] void: crater not added: CR dropped this round
+@guest screenshot 01-guest-600m-1s
+@guest waitnew 20 \[bt\] void: partner voidout blast done \(16 s\): ref released
+wait 2000
+# ---- the guest's catcher-flagged test, 600 m from the host: the host refuses it too (a row's reason or the drop)
+@guest action bt_sync 9 600 3
+@guest waitnew 5 \[bt\] void: test VOID2 #[0-9]+ at .*: (599|600|601) m from the partner's body.*a catcher crater r 40 wanted: sent
+waitlog 10 \[bt\] void: partner voidout blast at .* (59[5-9]|60[0-5]) m from you: far resource, flash fade 150/450 m
+waitlog 10 \[bt\] void: crater not added: .*\(VOID2 #[0-9]+\)
+waitnew 20 \[bt\] void: partner voidout blast done \(16 s\): ref released
+wait 3000
+nolog \[bt\] void: crater record added
+@guest nolog \[bt\] void: crater record added
+nolog \[bt\] void: .*FAULTED
+@guest nolog \[bt\] void: .*FAULTED
+nolog \[bt\] void: byte check FAILED
+@guest nolog \[bt\] void: byte check FAILED
+nolog \[bt\] void: .*NOT sent
+@guest nolog \[bt\] void: .*NOT sent
+nolog \[bt\] void: voidout flash window closed .*(changed|FAILED|did not finish)
+@guest nolog \[bt\] void: voidout flash window closed .*(changed|FAILED|did not finish)
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest quit
+wait 3000
+quit

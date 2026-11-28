@@ -18,7 +18,7 @@ bool On() noexcept;
 void Gazer(std::uint32_t loc, const double (&pos)[3], bool test, double now_ms) noexcept;
 void DropGazer(std::uint32_t loc) noexcept;
 // The partner hunted: the ring goes on the partner body when it is shown and fresh, else on the position the message carried.
-void Tar(const double (&pos)[3], bool gold, bool test, double now_ms) noexcept;
+void Tar(const double (&pos)[3], bool gold, bool test, double now_ms, float radius_m = 0) noexcept;  // radius 0: 6 m
 void Catcher(const double (&pos)[3], float hp_pct, double now_ms) noexcept;
 void ClearTrouble() noexcept;  // tar and catcher gone at once (CLEAR)
 

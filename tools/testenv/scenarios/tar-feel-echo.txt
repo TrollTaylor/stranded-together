@@ -1,0 +1,73 @@
+# Round 31 stage 4 gate (the round 31 build spec, Stage 4; module bt_tar): one game (role echo) with a test HUNT 8 m beside Sam.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario tar-feel-echo -SeedSaves complete-100
+# bt_sync 12 x y (bt_tar.cpp Command; hidden runs) makes a test HUNT (r 6 m, 20 s, then CLEAR) and feeds it through the HUNT codec
+# into bt_tar's own view, as the partner's would come (the echo; nothing is sent). Sam stands at -1032 40, 8 m east of the centre
+# -1040 40 (uphill: the record takes his z there, so the centre's ground is under its top); the record goes in, Sam is walked in
+# (dev_goto -1040 40: probe 26's spot), +0x844 rises, the test's CLEAR takes it out. Leg B: a second test HUNT on Sam where he
+# stands (no move in it: the clean cargo read). Leg C (the control): the real-save gate on this sandboxed save (bt_sync 12 0 1):
+# the same HUNT at the same spot is refused ("not felt") and the cargo read runs across it without a record.
+# No dev_god (Sam's health is evidence), no dev_weather (timefall would wear the cargo the gate reads).
+# THE CARGO READS (changed after run 20261128-020913): that run's feel passed every line, but its record-out read
+# `cargo d -632.983 (22 pieces)` across an episode in which dev_goto moved Sam 8 m (5 m down) into a record 7 m above him.
+# The build spec (stage 4 table: "GO (a real-save guest only if the gate reads cargo d 0)"; "Only if that shows 0 does
+# TarFeelGate let host_save=0 through") makes cargo d the read that DECIDES kRealSaveOk, not a pass line of the sandboxed feel,
+# so all three legs require the read itself (n >= 1 pieces, none lost). Run 20261128-075827: B -837.474, C (no tar) -836.074,
+# the same 5 of 22 pieces: something else wears them at this spot, the tar adds none, and leg B cannot show a clean 0.
+# kRealSaveOk stays false (the gate never saw cargo d 0.000 with the tar); a real-save guest still never gets a record.
+# Pass: bt_tar defaults to 1 after this and two-games-bt-trouble-tar.
+# Routing: bt_sync 12 goes to tar::Command (bt_sync.cpp SyncCommand; bt_rules.hpp SyncOp takes 0..13).
+# covers: bt-tar
+role echo
+graphics low
+timeout 360
+ini bt_tar=1
+start control 200
+goto bt-field-mknot-s
+wait 3000
+action dev_goto -1032 40
+wait 8000
+# ---- the test HUNT 8 m west of Sam: the record goes in, Sam outside it (2D 8 m vs 5.5)
+action bt_sync 12 -1040 40
+waitnew 5 \[bt\] tar: test HUNT \(bt_sync 12\): UP at \(-1040\.0 40\.0 [0-9.-]+\) r 6\.0 m for 20 s
+waitlog 5 \[bt\] tar: byte checks 8/8 ok
+# waitlog, not waitnew (run 20261128-011611): the record-in line comes in the same ms as the checks line, before the checks step
+# starts, so a waitnew (lines since the PREVIOUS step started) cannot see it; this is the run's first record-in line
+waitlog 5 \[bt\] tar: record in \(hm\+0xD0 1/10\) at \(-1040\.0 40\.0 [0-9.-]+\) r 6\.0 m h 2\.0, Sam [0-9.]+ m from its centre \(episode [0-9]+, test\)
+wait 3000
+screenshot 01-beside-the-tar
+# ---- Sam walked in: the feel
+action dev_goto -1040 40
+waitnew 12 \[bt\] tar: Sam in it \(\+0x844 (0\.[5-9]|1\.0)
+wait 2000
+screenshot 02-in-the-tar
+waitnew 5 \[bt\] tar: \+[0-9.]+ s: Sam inside yes .*hm140 0x0,
+# ---- the test's CLEAR: out, nothing left behind (count 0), health and the game state unchanged, the cargo read
+waitnew 25 \[bt\] tar: test HUNT \(bt_sync 12\): CLEAR after 20 s
+# the cargo read is required (n >= 1, none lost), not its value: Sam was moved in this episode (the line's `Sam moved`)
+waitnew 3 \[bt\] tar: record out \(the partner's hunt ended \(CLEAR\)\): removed yes, count 0; .*; hm140 0x0; health ([0-9.]+) -> \1; game (0x[0-9A-F]+) -> \2; cargo d -?[0-9]+\.[0-9]{3} \([1-9][0-9]* pieces\)
+wait 3000
+# ---- leg B: a second test HUNT centred on Sam where he stands (the record at his z, its 2 m above him, as the partner's would
+# be); he does not move in it, so its cargo read is the tar's alone (THE read for kRealSaveOk)
+action bt_sync 12 -1040 40
+waitnew 5 \[bt\] tar: record in \(hm\+0xD0 1/10\) at \(-1040\.0 40\.0 [0-9.-]+\) r 6\.0 m h 2\.0, Sam [0-9.]+ m from its centre \(episode [0-9]+, test\)
+waitnew 12 \[bt\] tar: Sam in it \(\+0x844 (0\.[5-9]|1\.0)
+waitnew 25 \[bt\] tar: record out \(the partner's hunt ended \(CLEAR\)\): removed yes, count 0; .*; hm140 0x0; health ([0-9.]+) -> \1; game (0x[0-9A-F]+) -> \2; cargo d -?[0-9]+\.[0-9]{3} \([1-9][0-9]* pieces\)
+wait 3000
+# ---- leg C, the control: the real-save gate (this save is sandboxed: the refusal path only): the same HUNT at the same spot,
+# no record. Its cargo read is NOT 0 (run 20261128-075827): 5 of the 22 pieces wear here with no tar and no rain spot
+# (C -836.074 vs B -837.474 over 20 s), so the tar adds no wear; the read is logged, any value passes.
+action bt_sync 12 0 1
+waitnew 3 \[bt\] tar: bt_sync 12: this game counts as a real-save guest for the tar gate: on
+action bt_sync 12 -1040 40
+waitnew 5 \[bt\] tar: not felt: this game plays on its own real save \(host_save=0\) \(bt_sync 12 0 1
+waitnew 25 \[bt\] tar: not felt \(episode [0-9]+, [0-9.]+ s, ended: the partner's hunt ended \(CLEAR\)\): cargo d -?[0-9]+\.[0-9]{3} \([1-9][0-9]* pieces\)
+action bt_sync 12 0 2
+waitnew 3 \[bt\] tar: bt_sync 12: this game counts as a real-save guest for the tar gate: off
+nolog \[bt\] tar: byte check FAILED
+nolog \[bt\] tar: off:
+nolog \[bt\] tar: .*FAULTED
+nolog \[bt\] tar: .*hm140 0x[1-9A-F]
+nolog \[bt\] tar: record out \(the game took it out of the list\)
+nolog \[bt\] tar: list full
+nolog \[bt\] tar: not added
+quit

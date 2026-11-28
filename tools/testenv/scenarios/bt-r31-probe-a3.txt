@@ -1,0 +1,93 @@
+# Round 31 stage 0 (docs/enemy-sync.md 25), part a3 (see bt-r31-probe-a for the batch): the gazer mirror, the yaw, the sky.
+# Timefall on (dev_weather 1: it writes saved types, a sandboxed save only), the counters in (16), then
+#   22 on the nearest gazer more than 40 m away for 20 s: variant 0 (writes and drops), then variant 1 (also ARMED / NEAR
+#   cleared); screenshots at 0 / 2 / 5 s; "[bt] gz mirror +t loc L: .. vis +0xB0 v" (variant 0 keeps vis > 0), hm140 stays 0, no
+#   GameOver; 23 the nearest gazer turned 45 degrees ("[bt] gz yaw loc L: entity yaw a -> b, next frame c": c == b, the yaw sticks);
+#   34 the BT sky 10 s (screenshots before / during / after: a visual-only change, no gazer change); last 16 reads the counts.
+# Stage 0 fix 2 (run 20261127-215813: op 23 found no gazer with an entity at 58.9 m): a gazer is realized (state 2, entity and
+# DSGazerComponent) only while it is ARMED (rain) and within its unit's range (~50 m, [[actor+0x10]+0x80]+0x70) of this game's
+# own player, and it is kept to range + 10 m (0x142995C94). So Sam goes to 29.6 m of 40AB1A93 (-1010, 40: realized in run
+# 20261127-215921), 20 is repeated until a dump names an entity, 23 (yaw) and 21 (the natural action / message hashes, 15 s)
+# run there; then Sam steps back to ~46 m (-1026, 40: beyond 40 m for 22, still kept by the +10 m) and 20 must still show the
+# entity before the two mirrors. "[bt] gz realize: .. range r m budget b" and "(realized, state 2: n)" log the rule's inputs.
+# Review fix (crash 3 / agitation restore): op 22 re-checks state 2, the picked entity and the component's back pointer before every
+# write and ends ("gz mirror back loc L: not checked (the gazer is no longer realized ..)") when the gazer is released (variant 1
+# clears ARMED, so it may be); at the end it writes the gazer's own +0x80 / +0x7C back and checks them for up to 5 s, with the
+# drops kept on until then: "[bt] gz mirror back loc L after n s: .. back yes" (back NO fails the run at the end; the dump after
+# each mirror shows +0x80 / +0x7C too).
+# covers: research
+# select: probe
+role solo
+graphics low
+timeout 360
+start control 200
+goto bt-field-mknot-s
+action dev_god 2
+action dev_weather 1
+wait 3000
+action bt_probe 1
+waitlog 10 \[bt\] byte checks: [0-9]+/[0-9]+ ok
+action bt_probe 16 600
+waitlog 10 \[bt\] r31 probe byte checks: [0-9]+/[0-9]+ ok
+waitlog 5 \[bt\] threads: [0-9]+ of 10 pass-through counters in
+wait 15000
+# ---- 20 at 59 m (unrealized: the far case), then 34: the sky
+action bt_probe 20
+waitnew 5 \[bt\] gz dump: [0-9]+ of [0-9]+ gazers within 60 m
+screenshot 08-sky-before
+action bt_probe 34 10
+waitnew 5 \[bt\] sky on for 10 s
+wait 5000
+screenshot 09-sky-during
+waitnew 15 \[bt\] sky done
+wait 2000
+screenshot 10-sky-after
+# ---- 16: the counts
+action bt_probe 16
+waitnew 5 \[bt\] wx job state at 17CF0: idle
+# ---- closer: 29.6 m, until the gazer is realized
+goto -1010 40 0
+wait 2000
+until 60 3000 \[bt\] gz dump loc [0-9A-F]{8} \([0-9]+ m\): .* entity 0x[1-9A-F][0-9A-F]* \( => action bt_probe 20
+screenshot 11-realized-30m
+# ---- 23: the yaw (the nearest gazer with an entity)
+action bt_probe 23 0 0 45
+waitnew 5 \[bt\] gz yaw loc [0-9A-F]{8}: entity yaw
+screenshot 07-yaw
+# ---- 21: the natural action / message hashes of a realized gazer (the mirror's whitelist), 15 s
+action bt_probe 21 15
+waitnew 25 \[bt\] gz trace done
+# ---- back to ~46 m (kept by the +10 m), still realized
+goto -1026 40 0
+wait 2000
+action bt_probe 20
+waitnew 5 \[bt\] gz dump loc [0-9A-F]{8} \([0-9]+ m\): .* entity 0x[1-9A-F][0-9A-F]* \(
+# ---- 22: the mirror, variant 0 then 1
+action bt_probe 22 0 0 2 0
+waitnew 5 \[bt\] gz mirror on: loc [0-9A-F]{8}
+screenshot 01-mirror0-0s
+wait 2000
+screenshot 02-mirror0-2s
+wait 3000
+screenshot 03-mirror0-5s
+waitnew 32 \[bt\] gz mirror back loc [0-9A-F]{8}
+action bt_probe 20
+waitnew 5 \[bt\] gz dump: [0-9]+ of [0-9]+ gazers within 60 m
+action bt_probe 22 0 0 2 1
+waitnew 5 \[bt\] gz mirror on: loc [0-9A-F]{8}
+screenshot 04-mirror1-0s
+wait 2000
+screenshot 05-mirror1-2s
+wait 3000
+screenshot 06-mirror1-5s
+waitnew 32 \[bt\] gz mirror back loc [0-9A-F]{8}
+action bt_probe 20
+waitnew 5 \[bt\] gz dump: [0-9]+ of [0-9]+ gazers within 60 m
+action bt_probe 0
+waitlog 5 \[bt\] probe stop
+nolog \[bt\] gz mirror back loc [0-9A-F]{8} .*back NO
+nolog \[bt\] FATAL-GUARD
+nolog \[bt\] r31 probe byte check FAILED
+nolog \[bt\] probe byte check FAILED
+nolog \[bt\] .*FAULTED
+quit

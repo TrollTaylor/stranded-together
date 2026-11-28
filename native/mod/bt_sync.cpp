@@ -24,6 +24,7 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <set>
@@ -31,9 +32,20 @@
 #include <vector>
 
 #include "automation.hpp"
+#include "bt_catcher.hpp"
+#include "bt_extra.hpp"
+#include "bt_feature.hpp"
+#include "bt_hunt.hpp"
 #include "bt_markers.hpp"
+#include "bt_mirror.hpp"
+#include "bt_probe_internal.hpp"
+#include "bt_probe_r31.hpp"
 #include "bt_rules.hpp"
+#include "bt_sync_internal.hpp"
+#include "bt_tar.hpp"
+#include "bt_void.hpp"
 #include "bt_world.hpp"
+#include "bt_wx.hpp"
 #include "config.hpp"
 #include "coop_session.hpp"
 #include "enemy_sync.hpp"
@@ -43,6 +55,7 @@
 #include "log.hpp"
 #include "partner_source.hpp"
 #include "player_sync.hpp"
+#include "real_body.hpp"
 #include "ride_together.hpp"
 #include "shot_sync.hpp"
 
@@ -875,6 +888,49 @@ void InstallVoidHook() {
         kVoidCallerCount);
 }
 
+// Round 31 stage 0 (run 20261127-210425: "r31 probe byte check FAILED: void" on both games, bt_probe 11's too): the prologue as
+// shipped, also with the hook above in. MinHook (x64) writes E9 rel32 to its relay (FF 25 00000000 + the detour's address) over the
+// first instructions and moves those into the trampoline (g_void_orig): the moved bytes are compared there, the rest in place. Any
+// other jmp (a hook that is not ours) fails it.
+bool VoidBytesOk() noexcept {
+    if (mem::CodeMatches(A(kVoidFn), kVoidSig)) return true;
+    if (!g_void_hook || !g_void_orig) return false;
+    std::uint8_t want[64] = {};
+    std::size_t n = 0;
+    for (const char* p = kVoidSig; *p && n < sizeof(want);) {
+        if (*p == ' ') {
+            ++p;
+            continue;
+        }
+        if (!p[1]) return false;
+        const char hex[3] = {p[0], p[1], 0};
+        want[n++] = static_cast<std::uint8_t>(std::strtoul(hex, nullptr, 16));
+        p += 2;
+    }
+    std::uint8_t head[5] = {}, relay[14] = {}, tramp[64] = {}, rest[64] = {};
+    if (!mem::Read(A(kVoidFn), head, sizeof(head)) || head[0] != 0xE9) return false;
+    std::int32_t rel = 0;
+    std::memcpy(&rel, head + 1, sizeof(rel));
+    const std::uintptr_t to = A(kVoidFn) + 5 + static_cast<std::intptr_t>(rel), detour = reinterpret_cast<std::uintptr_t>(&VoidDetour);
+    std::uintptr_t abs = 0;
+    if (to != detour) {
+        if (!mem::Read(to, relay, sizeof(relay)) || relay[0] != 0xFF || relay[1] != 0x25 || relay[2] | relay[3] | relay[4] | relay[5]) return false;
+        std::memcpy(&abs, relay + 6, sizeof(abs));
+        if (abs != detour) return false;
+    }
+    if (!mem::Read(reinterpret_cast<std::uintptr_t>(g_void_orig), tramp, n)) return false;
+    std::size_t moved = 0;
+    while (moved < n && tramp[moved] == want[moved]) ++moved;
+    if (moved < 5 || moved >= n) return false;
+    if (!mem::Read(A(kVoidFn) + moved, rest, n - moved) || std::memcmp(rest, want + moved, n - moved) != 0) return false;
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        Log("[bt] the voidout FUN_14299B1B0 prologue: our own hook's jmp in; the %zu moved bytes match in its trampoline, the other %zu in place", moved, n - moved);
+    }
+    return true;
+}
+
 // ResetAllGazers: byte-checked on first use, called on the game thread (as dev_enemies 3), SEH-guarded.
 int g_reset_check = -1;  // -1 not yet, 0 failed, 1 ok
 bool ResetUsable() {
@@ -899,6 +955,7 @@ bool CallReset(std::uintptr_t fn) noexcept {
 // ---------------------------------------------------------------- the sync's state (game thread, but the atomics)
 int g_sync = 0;                     // bt_sync
 int g_role = 0;                     // 1 host, 2 guest
+bool g_test_real_key = false;       // bt_test_real_save=1 on a guest (honoured in hidden runs only): counts as a real save
 std::atomic<bool> g_sync_dead{false};  // EmergencyStop / a faulted apply path: nothing more is sent or applied
 double g_s_next_ms = 0;
 std::uint32_t g_s_gen = 0;
@@ -948,7 +1005,10 @@ const char* RoleText(int r) { return r == 1 ? "host" : r == 2 ? "guest" : "?"; }
 // The guest applies the host's RESET only on a sandboxed save (a host-save guest, a test save, a hidden run): with host_save=0 she
 // plays on her own real save, which a partner never changes (dev_tools' kRealSaveReason rule; review round 28 defaults). The
 // hello's reset-apply cap says so.
-bool ResetApplyHere() { return g_sync >= 2 && g_role == 2 && automation::SavesRedirected(); }
+// A sandboxed save here: the redirect, unless bt_test_real_save stands in for a guest's own real save (hidden runs only; it
+// only ever takes writes away).
+bool SandboxedHere() { return automation::SavesRedirected() && !(g_test_real_key && automation::Enabled()); }
+bool ResetApplyHere() { return g_sync >= 2 && g_role == 2 && SandboxedHere(); }
 
 // Round 30 S1 / S2 (the code is at the end of the anonymous namespace).
 bool g_trouble_on = false;  // bt_trouble (with bt_sync)
@@ -964,7 +1024,7 @@ bool KillSendable() {
     return g_kill_level >= 1 && (w & btworld::kBitHook) && (w & btworld::kBitKill);
 }
 // A partner's KILL may be applied here: bt_kill 2; the guest only on a sandboxed save (Must-NOT 5).
-bool KillApplyHere() { return g_kill_level >= 2 && KillSendable() && (g_role == 1 || automation::SavesRedirected()); }
+bool KillApplyHere() { return g_kill_level >= 2 && KillSendable() && (g_role == 1 || SandboxedHere()); }
 void TroubleCensus(double now_ms, const Census& c);
 void GzstCensus(double now_ms, const Census& c);
 void OnTrouble(double now_ms, const std::uint8_t* b, std::size_t n);
@@ -973,6 +1033,14 @@ void OnKill(double now_ms, const std::uint8_t* b, std::size_t n);
 void InstallKillHook(const char* why);
 void S12Session();
 void S12Tick(double now_ms);
+// round 31 (the feature modules' routing, at the end of the anonymous namespace)
+std::uint16_t FeatureCaps();
+void FeatureHello();
+void FeatureEvent(WorldEvent e, double now_ms);
+void FeatureMsg(std::uint8_t type, const std::uint8_t* b, std::size_t n, double now_ms);
+void FeatureStatus(const char* why, bool periodic);
+void FeatureVoid(const VoidRec& r, double now_ms);
+void FeatureGazerEvent(const btworld::Event& e, double now_ms);
 
 void Toast(double now_ms, const char* text) {
     if (now_ms < g_s_toast_ms) return;
@@ -1050,7 +1118,7 @@ void SendHello(double now_ms) {
     h.role = static_cast<std::uint8_t>(g_role);
     h.caps = static_cast<std::uint16_t>(R::kCapField | R::kCapNoticed | (g_void_hook ? R::kCapVoid : 0) | (ResetApplyHere() ? R::kCapResetApply : 0) |
                                         (g_trouble_on ? (R::kCapTrouble | R::kCapGzst) : 0) | (KillSendable() ? R::kCapKill : 0) |
-                                        (KillApplyHere() ? R::kCapKillApply : 0));
+                                        (KillApplyHere() ? R::kCapKillApply : 0) | FeatureCaps());  // round 31: the feature modules' caps
     std::uint8_t b[R::kBtsHelloSize];
     if (!Send(b, R::EncodeHello(g_s_seq, h, b, sizeof(b)))) return;
     g_s_hello_sent = true;
@@ -1317,6 +1385,10 @@ void OnHello(const std::uint8_t* b, std::size_t n) {
         return;
     }
     g_s_peer = true;
+    // review (wire 1): our own hello before anything else goes (the partner drops every message before our hello); its BTS1 hello
+    // already proves channel 6, so no beacon wait: without this, FeatureHello's sends (WXROW, HUNT, CATCH, VOID2 edges) in the
+    // up-to-1-s window before the 1 Hz beacon poll were dropped there as stale
+    if (!g_s_hello_sent) SendHello(g_now_ms);
     Log("[bt] sync: partner hello: bt_sync %u, role %s, caps 0x%X; relay on (FIELD, NOTICED%s%s)", h.level, RoleText(h.role), h.caps,
         (h.caps & R::kCapVoid) ? ", VOID" : ", VOID (its hook is out)", (h.caps & R::kCapResetApply) ? ", RESET applied there" : "");
     // round 30 S1 / S2: each new type only to a partner whose hello names it (an older build never gets one)
@@ -1325,6 +1397,7 @@ void OnHello(const std::uint8_t* b, std::size_t n) {
     Log("[bt] sync: TROUBLE %s, GZST %s, KILL %s (partner kills applied here: %s; mine applied there: %s)", tr ? "on" : "off", gz ? "on" : "off",
         kill ? "on" : "off", KillApplyHere() ? "yes" : "no", (h.caps & R::kCapKillApply) ? "yes" : "no");
     if (kill) InstallKillHook("the kill relay");
+    FeatureHello();  // round 31: every feature module (each checks the caps it needs)
 }
 
 void OnField(double now_ms, const std::uint8_t* b, std::size_t n) {
@@ -1374,7 +1447,7 @@ void OnReset(double now_ms, const std::uint8_t* b, std::size_t n) {
     const char* why = nullptr;
     if (g_role != 2) why = "the host owns the field state (a guest's reset is not applied here)";
     else if (g_sync < 2) why = "bt_sync=1 here (2 applies it)";
-    else if (!automation::SavesRedirected()) why = "this game plays on its own real save (host_save=0): a partner's reset never changes it";
+    else if (!SandboxedHere()) why = "this game plays on its own real save (host_save=0): a partner's reset never changes it";
     else if (g_sync_dead.load()) why = "the sync is stopped";
     else if (g_applied_epoch && !R::EpochNewer(r.epoch, g_applied_epoch)) why = "not newer than the last applied";
     else if (!g_s_me_ok || !g_s_have_rec) why = "no census here yet (not in a world)";
@@ -1487,6 +1560,14 @@ void SyncDrain(double now_ms) {
             case R::kBtsTrouble: OnTrouble(now_ms, buf, n); break;
             case R::kBtsGzst: OnGzst(now_ms, buf, n); break;
             case R::kBtsKill: OnKill(now_ms, buf, n); break;
+            case R::kBtsWxRow:  // round 31: types 9..16 go to their feature modules
+            case R::kBtsWxBeat:
+            case R::kBtsHunt:
+            case R::kBtsGzst2:
+            case R::kBtsVoid2:
+            case R::kBtsCatch:
+            case R::kBtsReward:
+            case R::kBtsRespawn: FeatureMsg(h.type, buf, n, now_ms); break;
             default: ++g_s.bad; break;
         }
     }
@@ -1508,6 +1589,7 @@ void NewSession(std::uint32_t gen) {
     g_s_peer_level = g_s_peer_role = 0;
     g_s_peer_caps = 0;
     S12Session();
+    FeatureEvent(WorldEvent::link_lost, g_now_ms);  // round 31: a new link session: every module takes its records back
 }
 
 unsigned PendingKills();
@@ -1520,6 +1602,7 @@ void SyncStatus(const char* why) {
         g_s.tx_void, g_s.tx_reset, g_s.rx_hello, g_s.rx_field, g_s.rx_noticed, g_s.rx_void, g_s.rx_reset, g_s.applied, g_s.refused, g_s.compares,
         g_s.resets_here, g_void_calls.load(), g_void_lost.load(), g_s.bad, g_s.stale, g_s.unsent, g_s2.tx_trouble, g_s2.rx_trouble, g_s2.tx_gzst,
         g_s2.rx_gzst, g_s2.tx_kill, g_s2.unsent_kill, g_s2.rx_kill, g_s2.kill_applied, g_s2.kill_refused, PendingKills(), g_s2.events_lost);
+    FeatureStatus(why, false);  // round 31: the feature modules' lines
 }
 
 void SyncTick(double now_ms) {
@@ -1530,7 +1613,10 @@ void SyncTick(double now_ms) {
     // this game's voidouts (the detour's records): every one logged, relayed once the partner said hello
     VoidRec vr[kVoidRing];
     const unsigned nv = TakeVoids(vr, kVoidRing);
-    for (unsigned i = 0; i < nv; ++i) SendVoid(now_ms, vr[i], false);
+    for (unsigned i = 0; i < nv; ++i) {
+        SendVoid(now_ms, vr[i], false);
+        FeatureVoid(vr[i], now_ms);  // round 31: bt_void's VOID2
+    }
     // round 30: the partner's GameOver (beacon) and the pending VOID verdicts
     if (g_s_peer) SampleDown(now_ms);
     if (g_s_pend_n) ResolveVoids(now_ms);
@@ -1649,7 +1735,7 @@ unsigned ProbeCheck() {
     int ok = 0, total = 0;
     for (const PSite& s : kProbeSites) {
         ++total;
-        if (mem::CodeMatches(A(s.va), s.sig)) {
+        if (s.va == kVoidFn ? VoidBytesOk() : mem::CodeMatches(A(s.va), s.sig)) {  // round 31 stage 0: our own voidout hook accepted
             ++ok;
             continue;
         }
@@ -1727,12 +1813,27 @@ FlowFn g_flow_orig = nullptr;
 bool g_flow_hook = false;
 bool g_crater_dead = false;  // FATAL-GUARD (or EmergencyStop): no more P3 this run
 std::atomic<unsigned> g_flow_drops{0};
+std::atomic<unsigned> g_flow_calls{0};  // round 31: every call through the gate (bt_probe 29's "flow calls")
 void FlowDetour(void* a, std::uint64_t b, std::uint64_t c, std::uint64_t d, std::uint64_t e, std::uint64_t f, std::uint64_t g, std::uint64_t h) {
+    g_flow_calls.fetch_add(1, std::memory_order_relaxed);
     if (t_crater) {
         g_flow_drops.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     g_flow_orig(a, b, c, d, e, f, g, h);
+}
+// The gate in (once; round 31 shares it: bt_probe 29 counts the flow calls of its blasts, 35 lets the real one through).
+bool FlowHookIn(char* msg, std::size_t cap) {
+    if (g_flow_hook) return true;
+    if (!(ProbeCheck() & kPbCrater)) return Put(msg, cap, "bt probe: the voidout / flow byte checks failed (log)"), false;
+    if (!MhInit(msg, cap)) return false;
+    void* target = reinterpret_cast<void*>(A(kFlowFn));
+    MH_STATUS s = MH_CreateHook(target, reinterpret_cast<void*>(&FlowDetour), reinterpret_cast<void**>(&g_flow_orig));
+    if (s == MH_OK) s = MH_EnableHook(target);
+    g_flow_hook = s == MH_OK;
+    Log("[bt] probe: GameOver flow gate %s (FUN_14341F840, drops a call only inside the probe's crater)", g_flow_hook ? "in" : MH_StatusToString(s));
+    if (!g_flow_hook) return Put(msg, cap, "bt probe: the flow gate failed: %s", MH_StatusToString(s)), false;
+    return true;
 }
 // FUN_143409690(obj, 4) replicated with reads: an entry of [obj+0x10] (count i32 [obj+8]) with +0x11 == 4 and +0x14 bit 0.
 bool FlowEarlyNow() {
@@ -1882,15 +1983,7 @@ bool OpCrater(const double (&v)[3], char* msg, std::size_t cap) {
             static_cast<unsigned long long>(slot));
         return Put(msg, cap, "bt probe crater: refused: %s", why), false;
     }
-    if (!g_flow_hook) {
-        if (!MhInit(msg, cap)) return false;
-        void* target = reinterpret_cast<void*>(A(kFlowFn));
-        MH_STATUS s = MH_CreateHook(target, reinterpret_cast<void*>(&FlowDetour), reinterpret_cast<void**>(&g_flow_orig));
-        if (s == MH_OK) s = MH_EnableHook(target);
-        g_flow_hook = s == MH_OK;
-        Log("[bt] probe: GameOver flow gate %s (FUN_14341F840, drops a call only inside the probe's crater)", g_flow_hook ? "in" : MH_StatusToString(s));
-        if (!g_flow_hook) return Put(msg, cap, "bt probe crater: the flow gate failed: %s", MH_StatusToString(s)), false;
-    }
+    if (!FlowHookIn(msg, cap)) return false;
     std::uint8_t first = 0;
     if (!mem::Rd(A(kFlowFn), first) || first != 0xE9) {
         g_crater_dead = true;
@@ -2173,6 +2266,7 @@ void TroubleCensus(double now_ms, const Census& c) {
         if (k.entity && k.active && k.hp > 0 && (!cat || (k.pos_ok && !cat->pos_ok))) cat = &k;
     in.catcher = cat != nullptr;
     in.catcher_hp = cat ? cat->hp : 0.0f;
+    in.pulled = hunt::PulledNow();  // round 31: set only by the test op bt_sync 8 (bt_hunt)
     float pct = -1;
     const std::uint8_t kind = g_tr.Step(in, now_ms, &pct);
     if (!kind) return;
@@ -2270,7 +2364,9 @@ void OnTrouble(double now_ms, const std::uint8_t* b, std::size_t n) {
         case R::kTrHunted:
         case R::kTrPulled:
         case R::kTrCaught: btmarks::Tar(p, gold, test, now_ms); break;
-        case R::kTrCatcher: btmarks::Catcher(p, m.hp, now_ms); break;
+        case R::kTrCatcher:  // round 31: bt_catcher's CATCH owns the one catcher mark while it shows a partner catcher
+            if (!catcher::OwnsCatcherMark()) btmarks::Catcher(p, m.hp, now_ms);
+            break;
         case R::kTrClear: btmarks::ClearTrouble(); break;
     }
     if (o.log) {
@@ -2371,7 +2467,7 @@ void KillEvent(double now_ms, const btworld::Event& e) {
     }
     R::BtsKill k;
     k.field = field, k.loc = loc, k.reason = e.reason, k.world = esync::Gate().guids, k.cause = cause;
-    k.flags = static_cast<std::uint8_t>((automation::SavesRedirected() ? R::kKfSandboxed : 0) | (e.tag == R::kTagTest ? R::kKfTest : 0));
+    k.flags = static_cast<std::uint8_t>((SandboxedHere() ? R::kKfSandboxed : 0) | (e.tag == R::kTagTest ? R::kKfTest : 0));
     for (int i = 0; i < 3; ++i) k.pos[i] = e.pos_ok ? static_cast<float>(e.pos[i]) : 0.0f;
     k.sender_ms = static_cast<std::uint32_t>(link::NowMs());
     const std::uint32_t seq = g_s_seq;
@@ -2396,6 +2492,8 @@ void WorldEvents(double now_ms) {
     }
     for (unsigned i = 0; i < n; ++i) {
         OnProbeEvent(ev[i]);
+        r31::OnWorldEvent(ev[i]);  // round 31: bt_probe 36's kill
+        FeatureGazerEvent(ev[i], now_ms);  // round 31: bt_mirror, bt_extra
         KillEvent(now_ms, ev[i]);
     }
 }
@@ -2487,7 +2585,7 @@ void ProcessKills(double now_ms) {
         R::KillApplyIn in;
         in.bt_kill = g_kill_level;
         in.role = g_role;
-        in.sandboxed = automation::SavesRedirected();
+        in.sandboxed = SandboxedHere();
         in.sender_sandboxed = (p.k.flags & R::kKfSandboxed) != 0;
         in.world_equal = world && p.k.world && world == p.k.world;
         in.records_equal = records;
@@ -2517,7 +2615,7 @@ void ProcessKills(double now_ms) {
             float h = 0, prev = 0;
             std::uint32_t flags = 0;
             if (mem::Rd(actor + kActState, state) && mem::Rd(actor + kGzHealth, h) && mem::Rd(actor + kGzPrevHealth, prev) && mem::Rd(actor + kActFlags, flags))
-                in.guard = R::KillGuard(state, h, prev, flags);
+                in.guard = R::KillGuard(state, h, prev, flags, extra::KillLookOn());  // round 31: a realized copy with the kill look
             else
                 in.streamed = false;  // unreadable now: held as not streamed
         }
@@ -2530,7 +2628,8 @@ void ProcessKills(double now_ms) {
             TakeCensus(now_ms, c);
             const Field* f = FindField(c, field_here);
             p.list0 = c.list, p.killed0 = f ? f->killed : -1;
-            if (btworld::ArmKill(actor, id, R::kTagMirror)) {
+            const std::uint32_t look = extra::KillLookReason();  // round 31: 0 = the rain-gone reason (the kill look off)
+            if (btworld::ArmKill(actor, id, R::kTagMirror, look, 0, look != 0)) {  // a realized copy only with the kill look on
                 p.armed = true, p.actor = actor, p.id = id, p.arm_ms = now_ms, p.scene = scene, p.dist = dist, p.field_here = field_here;
                 Log("[bt] partner kill loc %08X: armed (id %05X, field %08X %s; %.0f m from you, +0x3A8 0x%llX %s, after %.1f s)", p.k.loc, id, field_here,
                     R::FieldName(field_here), dist, static_cast<unsigned long long>(scene),
@@ -2735,11 +2834,282 @@ bool OpTestKill(const double (&v)[3], char* msg, std::size_t cap) {
     return Put(msg, cap, "bt sync: test kill armed for loc %08X (log)", z->loc_hash), true;
 }
 
+// ================================================================ round 31: the seven BT feature modules (bt_feature.hpp)
+// bt_wx (stage 2), bt_hunt (3), bt_tar (4), bt_mirror (5), bt_void (6, st::bt::voidout), bt_catcher (7), bt_extra (8). This file
+// only routes: their caps into the hello, types 9..16 to their OnMsg, the edges to OnWorldEvent, the TickCtx to Tick, the
+// bt_sync 8..13 test ops, EmergencyStop; plus the hooks each header names (PULLED, the local voidouts, the gazer events, the kill
+// look's reason). Tick runs while the relay can run (bt_sync >= 1 in a two-game session), in hidden runs, and in solo / echo
+// roles with bt_tar or bt_sky set; otherwise it costs one flag test.
+int g_f_role = 0;             // session.ini's role: 1 host, 2 guest, 0 another (whatever bt_sync says)
+bool g_f_echo = false;        // role echo
+bool g_f_solo_on = false;     // solo / echo with bt_tar or bt_sky
+bool g_f_installed = false;
+bool g_f_load_seen = false, g_f_load_prev = false;
+bool g_f_link_prev = false;
+bool g_f_gone = false;
+double g_f_peer_ms = -1;  // when this link session's partner hello was first seen (FeatTick)
+double g_f_status_ms = 0;
+std::uint32_t g_f_status_print = 0;
+unsigned g_f_rx[R::kBtsRespawn + 1] = {};  // types 9..16 received (routed)
+
+bool RealSaveHere() { return g_f_role == 2 && !SandboxedHere(); }
+bool PeerRealSave() { return g_s_peer && g_s_peer_role == 2 && !(g_s_peer_caps & R::kCapResetApply); }
+PeerHello PeerNow() {
+    PeerHello p;
+    if (!g_s_peer) return p;
+    p.level = static_cast<std::uint8_t>(g_s_peer_level), p.role = static_cast<std::uint8_t>(g_s_peer_role), p.caps = g_s_peer_caps;
+    p.real_save = PeerRealSave();
+    return p;
+}
+
+// review (wire 1): nothing before our own hello (the partner would drop it as stale)
+bool FeatSend(const std::uint8_t* b, std::size_t n) noexcept { return g_s_peer && g_s_hello_sent && Send(b, n); }
+std::uint32_t FeatSeq() noexcept { return g_s_seq; }
+
+void FeatureInstall(const Config& config) {
+    g_f_role = config.role == Role::host ? 1 : config.role == Role::guest ? 2 : 0;
+    g_f_echo = config.role == Role::echo;
+    g_f_solo_on = (config.role == Role::solo || config.role == Role::echo) && (config.bt_tar != 0 || config.bt_sky != 0);
+    wx::Install(config);
+    hunt::Install(config);
+    tar::Install(config);
+    mirror::Install(config);
+    voidout::Install(config);
+    catcher::Install(config);
+    extra::Install(config);
+    g_f_installed = true;
+}
+
+std::uint16_t FeatureCaps() {
+    return static_cast<std::uint16_t>(wx::Caps() | hunt::Caps() | tar::Caps() | mirror::Caps() | voidout::Caps() | catcher::Caps() | extra::Caps());
+}
+
+void FeatureHello() {
+    const PeerHello p = PeerNow();
+    wx::OnHello(p);
+    hunt::OnHello(p);
+    tar::OnHello(p);
+    mirror::OnHello(p);
+    voidout::OnHello(p);
+    catcher::OnHello(p);
+    extra::OnHello(p);
+}
+
+void FeatureEvent(WorldEvent e, double now_ms) {
+    if (!g_f_installed || g_sync_dead.load()) return;
+    wx::OnWorldEvent(e, now_ms);
+    hunt::OnWorldEvent(e, now_ms);
+    tar::OnWorldEvent(e, now_ms);
+    mirror::OnWorldEvent(e, now_ms);
+    voidout::OnWorldEvent(e, now_ms);
+    catcher::OnWorldEvent(e, now_ms);
+    extra::OnWorldEvent(e, now_ms);
+}
+
+void FeatureMsg(std::uint8_t type, const std::uint8_t* b, std::size_t n, double now_ms) {
+    if (type < sizeof(g_f_rx) / sizeof(g_f_rx[0])) ++g_f_rx[type];
+    switch (type) {
+        case R::kBtsWxRow:
+        case R::kBtsWxBeat: wx::OnMsg(type, b, n, now_ms); break;
+        case R::kBtsHunt:  // HUNT feeds the view (bt_hunt) and the tar feel (bt_tar), each decoding it on its own
+            hunt::OnMsg(type, b, n, now_ms);
+            tar::OnMsg(type, b, n, now_ms);
+            break;
+        case R::kBtsGzst2: mirror::OnMsg(type, b, n, now_ms); break;
+        case R::kBtsVoid2: voidout::OnMsg(type, b, n, now_ms); break;
+        case R::kBtsCatch:
+        case R::kBtsReward: catcher::OnMsg(type, b, n, now_ms); break;
+        case R::kBtsRespawn: extra::OnMsg(type, b, n, now_ms); break;
+        default: break;
+    }
+}
+
+void FeatureVoid(const VoidRec& r, double now_ms) {
+    LocalVoid v;
+    std::memcpy(v.pos, r.pos, sizeof(v.pos));
+    v.pos_ok = r.pos_ok, v.caused = r.caused != 0, v.baggage = r.baggage != 0, v.source = r.source, v.far_dist = r.far_dist;
+    v.ret_va = r.ret ? static_cast<std::uint64_t>(r.ret - mem::Base() + kImage) : 0;
+    voidout::OnLocalVoid(v, now_ms);
+}
+
+void FeatureGazerEvent(const btworld::Event& e, double now_ms) {
+    mirror::OnGazerEvent(e, now_ms);
+    extra::OnGazerEvent(e, now_ms);
+}
+
+using StatusFn = void (*)(char*, std::size_t) noexcept;
+constexpr StatusFn kStatusFns[] = {&wx::Status, &hunt::Status, &tar::Status, &mirror::Status, &voidout::Status, &catcher::Status, &extra::Status};
+
+// The modules' lines. periodic: only when one changed since the last periodic print (every 60 s while the relay is on).
+void FeatureStatus(const char* why, bool periodic) {
+    if (!g_f_installed) return;
+    char lines[sizeof(kStatusFns) / sizeof(kStatusFns[0])][kStatusCap];
+    std::uint32_t print = R::kFnvSeed;
+    for (unsigned i = 0; i < sizeof(kStatusFns) / sizeof(kStatusFns[0]); ++i) {
+        lines[i][0] = 0;
+        kStatusFns[i](lines[i], sizeof(lines[i]));
+        lines[i][sizeof(lines[i]) - 1] = 0;
+        for (const char* p = lines[i]; *p; ++p) print = (print ^ static_cast<std::uint8_t>(*p)) * 16777619u;
+    }
+    if (periodic && print == g_f_status_print) return;
+    g_f_status_print = print;
+    Log("[bt] r31 status (%s): got wxrow %u wxbeat %u hunt %u gzst2 %u void2 %u catch %u reward %u respawn %u", why, g_f_rx[R::kBtsWxRow],
+        g_f_rx[R::kBtsWxBeat], g_f_rx[R::kBtsHunt], g_f_rx[R::kBtsGzst2], g_f_rx[R::kBtsVoid2], g_f_rx[R::kBtsCatch], g_f_rx[R::kBtsReward],
+        g_f_rx[R::kBtsRespawn]);
+    for (const auto& l : lines) Log("[bt] r31 status: %s", l);
+}
+
+void FeatTick(double now_ms) {
+    if (!g_f_installed || g_sync_dead.load()) return;
+    if (!g_sync && !g_f_solo_on && !automation::Enabled()) return;
+    TickCtx c;
+    c.now_ms = now_ms;
+    c.role = g_f_role, c.echo = g_f_echo, c.sync_level = g_sync;
+    c.link_up = link::GetInfo().connected;
+    c.peer = g_s_peer;
+    c.partner = PeerNow();
+    c.real_save = RealSaveHere();
+    c.saves_redirected = automation::SavesRedirected();
+    c.hidden_run = automation::Enabled();
+    c.loading = LoadingNow();
+    c.playing_why = c.loading ? "loading (no live player, or a load in progress)" : PlayingWhy();
+    c.carried = ride::Carried();
+    c.hunted_here = g_checked && HunterAreaUp() == 1;  // only once the census ran its byte checks (no new checks from here)
+    c.partner_trouble = g_tv.kind;
+    c.me_ok = LocalPos(c.me);
+    c.partner_ok = sync::DebugPartnerPosition(c.partner_pos);
+    c.partner_fresh = c.partner_ok && realbody::PartnerFrameFresh(1000);
+    c.send = &FeatSend;
+    c.seq = &FeatSeq;
+    // the edges, before the modules' ticks
+    if (!g_f_load_seen) g_f_load_seen = true, g_f_load_prev = c.loading;
+    else if (c.loading != g_f_load_prev) {
+        g_f_load_prev = c.loading;
+        FeatureEvent(c.loading ? WorldEvent::load_start : WorldEvent::load_end, now_ms);
+    }
+    if (g_f_link_prev && !c.link_up) FeatureEvent(WorldEvent::link_lost, now_ms);
+    g_f_link_prev = c.link_up;
+    bool gone = false;
+    if (c.link_up && c.peer) {
+        if (g_f_peer_ms < 0) g_f_peer_ms = now_ms;
+        shotw::Beacon b;
+        double age = 0;
+        // Two missed beacons: the SEH1 beacon goes every 5 s (shot_sync.cpp BeaconTick), so 5 s plus the link's latency read as
+        // gone (gate batch 20261128-01*: spurious partner_gone in bt_hunt, bt_wx, bt_mirror and bt_void). No beacon yet on this
+        // link session (a reconnect clears it; the hello comes first): gone only 12 s after the hello (run 20261128-010942 91.672).
+        gone = shots::PeerBeacon(&b, &age) ? !(age <= 12000.0) : now_ms - g_f_peer_ms > 12000.0;
+    } else {
+        g_f_peer_ms = -1;
+    }
+    if (gone && !g_f_gone) FeatureEvent(WorldEvent::partner_gone, now_ms);
+    g_f_gone = gone;
+    wx::Tick(c);
+    hunt::Tick(c);
+    tar::Tick(c);
+    mirror::Tick(c);
+    voidout::Tick(c);
+    catcher::Tick(c);
+    extra::Tick(c);
+    if (c.peer && now_ms >= g_f_status_ms) {
+        if (g_f_status_ms > 0) FeatureStatus("60 s", true);
+        g_f_status_ms = now_ms + 60000.0;
+    }
+}
+
 }  // namespace
+
+const char* WorldEventName(WorldEvent e) noexcept {
+    switch (e) {
+        case WorldEvent::load_start: return "load start";
+        case WorldEvent::load_end: return "load end";
+        case WorldEvent::link_lost: return "link lost";
+        case WorldEvent::partner_gone: return "partner gone";
+    }
+    return "?";
+}
+
+// Round 31 stage 0 (bt_probe_internal.hpp): the helpers bt_probe_r31.cpp reuses.
+namespace internal {
+double NowMs() noexcept { return g_now_ms; }
+bool LocalPos(double (&out)[3]) noexcept { return bt::LocalPos(out); }
+bool SamFacing(double (&me)[3], double* fx, double* fy) noexcept { return bt::SamFacing(me, fx, fy); }
+bool LoadingNow() noexcept { return bt::LoadingNow(); }
+const char* PlayingWhy() noexcept { return bt::PlayingWhy(); }
+int Gazers(GzInfo* out, int cap) noexcept {
+    if ((Check() & (kMgr | kActor)) != (kMgr | kActor)) return -1;
+    Census c;
+    TakeCensus(g_now_ms, c);
+    int n = 0;
+    for (const Gazer& z : c.g) {
+        if (!z.actor || n >= cap) continue;
+        GzInfo& o = out[n++];
+        o.actor = z.actor, o.id = z.id, o.loc = z.loc_hash, o.field = z.field, o.flags = z.flags, o.state = z.state;
+        o.pdist = z.pdist, o.trig = z.trig, o.located = z.located, o.pos_ok = z.pos_ok;
+        std::memcpy(o.pos, z.pos, sizeof(o.pos));
+    }
+    return n;
+}
+bool GazerKillOk() noexcept { return (ProbeCheck() & kPbKill) && (Check() & kActor); }
+bool VoidOk() noexcept { return (ProbeCheck() & kPbCrater) != 0; }
+bool VoidPrologueOk() noexcept { return VoidBytesOk(); }
+bool VoidHookIn() noexcept { return g_void_hook; }
+bool InstallGz(char* msg, std::size_t cap) noexcept { return bt::InstallGz(msg, cap); }
+bool MhInit(char* msg, std::size_t cap) noexcept { return bt::MhInit(msg, cap); }
+bool FlowGate(char* msg, std::size_t cap) noexcept { return !g_crater_dead && FlowHookIn(msg, cap); }
+unsigned FlowCalls() noexcept { return g_flow_calls.load(std::memory_order_relaxed); }
+
+// Round 31 (bt_sync_internal.hpp): the feature modules' helpers.
+std::uintptr_t Addr(std::uintptr_t va) noexcept { return A(va); }
+unsigned long long Va(std::uintptr_t addr) noexcept { return addr ? static_cast<unsigned long long>(addr - mem::Base() + kImage) : 0ull; }
+bool SiteOk(std::uintptr_t va, const char* sig) noexcept { return mem::Base() && sig && mem::CodeMatches(A(va), sig); }
+bool RipOk(std::uintptr_t insn_va, unsigned off, unsigned len, std::uintptr_t want_va) noexcept {
+    return mem::Base() && mem::RipTarget(A(insn_va), off, len) == A(want_va);
+}
+bool ReadN(std::uintptr_t addr, void* out, std::size_t n) noexcept { return addr && out && mem::Read(addr, out, n); }
+bool WriteN(std::uintptr_t addr, const void* p, std::size_t n) noexcept {
+    if (addr < 0x10000 || !p || !n) return false;
+    SIZE_T got = 0;
+    return WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(addr), p, n, &got) && got == n;
+}
+std::uintptr_t GazerMgr() noexcept { return (Check() & kMgr) ? mem::Q(A(kGazerGlobal)) : 0; }
+std::uintptr_t HunterMgr() noexcept { return (Check() & kHunter) ? mem::Q(A(kHunterGlobal)) : 0; }
+std::uintptr_t CatcherMgr() noexcept { return (Check() & kCatcher) ? mem::Q(A(kCatcherGlobal)) : 0; }
+std::uintptr_t Registry() noexcept { return (Check() & kReg) ? mem::Q(A(kRegGlobal)) : 0; }
+std::uintptr_t WeatherSys() noexcept {
+    static int ok = -1;  // game thread
+    if (ok < 0) {
+        ok = RipOk(0x142E1FE34, 3, 7, kWeatherGlobal) ? 1 : 0;
+        if (!ok) Log("[bt] byte check FAILED: the weather global 0x147BF83B8 (its load at 0x142E1FE34): no weather system for the features");
+    }
+    return ok ? mem::Q(A(kWeatherGlobal)) : 0;
+}
+std::uintptr_t ResolveActor(std::uint32_t id) noexcept {
+    if (!(Check() & kReg)) return 0;
+    RefreshGroups(g_now_ms, false);
+    return Resolve(id);
+}
+int SessionRole() noexcept { return g_f_role; }
+int SyncLevel() noexcept { return g_sync; }
+bool RealSave() noexcept { return RealSaveHere(); }
+bool RecordsEqual() noexcept { return g_s_have_here && g_s_have_there && R::CompareFields(g_s_here, g_s_there).records; }
+bool PeerOn() noexcept { return g_s_peer; }
+PeerHello Peer() noexcept { return PeerNow(); }
+bool Stopped() noexcept { return g_sync_dead.load(); }
+std::uint32_t Seq() noexcept { return FeatSeq(); }
+bool SendBts(const std::uint8_t* msg, std::size_t n) noexcept { return FeatSend(msg, n); }
+bool PartnerPos(double (&out)[3]) noexcept { return sync::DebugPartnerPosition(out); }
+void Toast(double now_ms, const char* text) noexcept {
+    if (text) bt::Toast(now_ms, text);
+}
+}  // namespace internal
 
 void Install(const Config& config) noexcept {
     // B1: bt_sync=1|2 (config.cpp clamps it; the integration adds the key), only in a two-game session
     g_sync = R::SyncLevel(static_cast<double>(config.bt_sync));
+    g_test_real_key = config.bt_test_real_save && config.role == Role::guest;
+    if (g_test_real_key)
+        Log("[bt] sync: bt_test_real_save=1: this guest counts as on her own real save (host_save=0) for the BT sync (hidden runs "
+            "only; %s)", automation::Enabled() ? "a hidden run: on" : "honoured once the run is a hidden run, else ignored");
     if (g_sync) {
         g_role = config.role == Role::host ? 1 : config.role == Role::guest ? 2 : 0;
         if (!g_role) {
@@ -2758,9 +3128,10 @@ void Install(const Config& config) noexcept {
             btmarks::Init(config);
             Log("[bt] sync: TROUBLE / GZST %s; KILL %s%s", g_trouble_on ? "on (the partner's trouble as markers here)" : "off (bt_trouble=0)",
                 g_kill_level >= 2 ? "on (partner kills applied here)" : g_kill_level == 1 ? "relayed, not applied (bt_kill=1 or bt_sync=1)" : "off (bt_kill=0)",
-                g_kill_level >= 2 && g_role == 2 && !automation::SavesRedirected() ? "; but never on this real save (host_save=0)" : "");
+                g_kill_level >= 2 && g_role == 2 && !SandboxedHere() ? "; but never on this real save (host_save=0)" : "");
         }
     }
+    FeatureInstall(config);  // round 31: the seven feature modules (every role; each refuses itself when off)
     g_ini = R::ProbeMode(static_cast<double>(config.bt_probe));
     if (g_ini == 0) return;
     g_on = true;
@@ -2773,8 +3144,10 @@ void Install(const Config& config) noexcept {
 void Tick(double now_ms) noexcept {
     g_now_ms = now_ms;
     if (g_sync) SyncTick(now_ms);
+    FeatTick(now_ms);  // round 31: the feature modules (one flag test while none can run)
     if (btworld::HookIn()) WorldEvents(now_ms);  // round 30 S2: the gazer update's events (the kill relay and the probe's watch)
     if (btworld::HookIn() || g_kw.on || g_cw.on || g_hw.on) ProbeTick(now_ms);  // round 30: the world probes (hidden runs only)
+    r31::Tick(now_ms);  // round 31 stage 0: bt_probe 15..36 (nothing to do unless an op ran)
     if (!g_on || now_ms < g_next_ms) return;
     g_next_ms = now_ms + g_interval_ms;
     double me[3];
@@ -2797,7 +3170,16 @@ void Tick(double now_ms) noexcept {
 }
 
 bool Command(const double (&v)[3], char* msg, std::size_t cap) noexcept {
+    const double x[2] = {0, 0};
+    return Command(v, x, msg, cap);
+}
+
+bool Command(const double (&v)[3], const double (&x)[2], char* msg, std::size_t cap) noexcept {
     if (const char* why = Refusal()) return Put(msg, cap, "bt probe: %s", why), false;
+    if (v[0] >= 15 && v[0] <= 36 && v[0] == std::floor(v[0])) {  // round 31 stage 0: the exact integers 15..36 (hidden runs only)
+        const double a[5] = {v[0], v[1], v[2], x[0], x[1]};
+        return r31::Command(static_cast<int>(v[0]), a, msg, cap);
+    }
     const int op = R::ProbeOp(v[0]);
     if (op >= R::kOpThreads) return ProbeOps(op, v, msg, cap);  // round 30: the world probes (hidden runs only)
     if (op == 0) {
@@ -2827,8 +3209,20 @@ bool Command(const double (&v)[3], char* msg, std::size_t cap) noexcept {
 }
 
 bool SyncCommand(const double (&v)[3], char* msg, std::size_t cap) noexcept {
-    if (!g_sync) return Put(msg, cap, "bt sync: off (bt_sync=0 in session.ini, or not a two-game session)"), false;
     const int op = R::SyncOp(v[0]);
+    if (op >= 8) {  // round 31: the feature modules' test ops (each refuses itself when off, also in solo / echo roles)
+        if (g_sync_dead.load()) return Put(msg, cap, "bt sync: stopped (emergency stop)"), false;
+        switch (op) {
+            case 8: return hunt::Command(op, v, msg, cap);
+            case 9: return voidout::Command(op, v, msg, cap);
+            case 10: return catcher::Command(op, v, msg, cap);
+            case 11: return extra::Command(op, v, msg, cap);
+            case 12: return tar::Command(op, v, msg, cap);
+            case 13: return mirror::Command(op, v, msg, cap);
+            default: break;
+        }
+    }
+    if (!g_sync) return Put(msg, cap, "bt sync: off (bt_sync=0 in session.ini, or not a two-game session)"), false;
     if (op == 0) {
         SyncStatus("action");
         return Put(msg, cap, "bt sync: partner %s; sent %u field / %u noticed / %u void / %u reset; got %u / %u / %u / %u (applied %u) (log)",
@@ -2864,7 +3258,8 @@ bool SyncCommand(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     if (op == 5) return OpTestTrouble(msg, cap);
     if (op == 6) return OpTestGzst(msg, cap);
     if (op == 7) return OpTestKill(v, msg, cap);
-    return Put(msg, cap, "bt sync: v[0] 0 status, 1 FIELD now, 3 test VOID, 4 test NOTICED, 5 test TROUBLE, 6 test GZST, 7 <hi16> <lo16> a kill here"),
+    return Put(msg, cap, "bt sync: v[0] 0 status, 1 FIELD now, 3 test VOID, 4 test NOTICED, 5 test TROUBLE, 6 test GZST, 7 <hi16> <lo16> a kill here, "
+                         "8 test HUNT, 9 test voidout, 10 test catcher, 11 test RESPAWN"),
            false;
 }
 
@@ -2881,6 +3276,15 @@ void EmergencyStop() noexcept {
     g_sync_dead.store(true);
     btworld::EmergencyStop();    // round 30: the gazer update hook straight through, armed kills dropped
     g_crater_dead = true;        // no more guarded craters (the flow gate passes everything while t_crater is clear)
+    r31::EmergencyStop();        // round 31: every probe detour straight through, every op ended
+    // round 31: the feature modules, synchronously (no later Tick comes): each passes its detours through and restores now
+    wx::EmergencyStop();
+    hunt::EmergencyStop();
+    tar::EmergencyStop();
+    mirror::EmergencyStop();
+    voidout::EmergencyStop();
+    catcher::EmergencyStop();
+    extra::EmergencyStop();
 }
 
 }  // namespace st::bt

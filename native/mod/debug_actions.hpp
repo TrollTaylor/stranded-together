@@ -172,6 +172,7 @@ enum class Action : std::uint8_t {
 struct Request {
     Action action = Action::count;
     double v[3] = {};
+    double x[2] = {};  // round 31: the 4th and 5th numbers (only bt_probe takes them; automation.hpp)
     float f[2] = {};
     std::int32_t i = 0;
     bool flag = false;

@@ -1,0 +1,58 @@
+# Round 31 stage 8 gate (the round 31 build spec, Stage 8; module bt_extra): leg R (bt_sync 11 on the host; a sandboxed guest applies).
+# The host's bt_sync 11 0 <field> sends a test RESPAWN for field 390B7DE4 (bt211_01; the host only sends, no world write there);
+# the sandboxed guest (host_save=1) calls EnableRespawnGazers 0x1429A76D0 on her own scene of that field (game thread, SEH) and
+# logs the respawn flag 0x4000000 on its gazers 2 s later. No FAULTED line. The natural respawn (the default's second condition)
+# is read from any gate run's host log: "\[bt\] extra: respawn on \(host\): field [0-9A-F]{8} \(natural\)".
+# Look at: 01 / 02 (the field on both after the apply).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-kill-respawn -SeedSaves complete-100 -GuestSeed profile-only -Id round31-bt-extra
+# From the launcher-generated ini (launcherini local-test: the launcher's Local test already writes host_save=1, a sandboxed
+# guest; testenv refuses an added host_save line with launcherini) plus the key under test.
+# covers: bt-extra
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini bt_sync=2
+ini bt_respawn=1
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[bt\] sync: bt_sync=2 as the host
+@guest waitlog 5 \[bt\] sync: bt_sync=2 as the guest
+waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role guest
+@guest waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role host
+waitlog 30 \[bt\] extra: byte checks: [0-9]+/[0-9]+ ok; kill look (ok|OFF), respawn ok
+@guest waitlog 30 \[bt\] extra: byte checks: [0-9]+/[0-9]+ ok; kill look (ok|OFF), respawn ok
+waitlog 10 \[bt\] world byte checks: [0-9]+/[0-9]+ ok; hook ok, kill ok
+@guest waitlog 10 \[bt\] world byte checks: [0-9]+/[0-9]+ ok; hook ok, kill ok
+waitlog 5 \[bt\] extra: partner hello: .*respawn on \(the host sends; the partner's cap 0x2000 yes
+waitlog 60 \[bt\] extra: respawn hook in \(EnableRespawnGazers FUN_1429A76D0
+@both action dev_god 2
+@both action dev_weather 1
+wait 3000
+goto bt-field-mknot-s
+@guest goto -1046 36 0
+wait 15000
+waitlog 20 \[bt\] field compare #[0-9]+: records equal .*bt211_01
+@guest waitlog 20 \[bt\] field compare #[0-9]+: records equal .*bt211_01
+# ---- the test RESPAWN (0x390B7DE4 = field 390B7DE4)
+action bt_sync 11 0 0x390B7DE4
+waitlog 5 \[bt\] extra: respawn on \(host\): field 390B7DE4 \(test, bt_sync 11\): .*sent to the guest .*her cap 0x2000 yes
+@guest waitlog 10 \[bt\] extra: RESPAWN received: field 390B7DE4 .*\(scene hash 390B7DE4\)
+@guest waitlog 60 \[bt\] extra: respawn applied: field 390B7DE4 \(EnableRespawnGazers 0x1429A76D0 on scene 0x[1-9A-F]
+@guest waitlog 10 \[bt\] extra: respawn after 2 s: field 390B7DE4: the respawn flag 0x4000000 on [0-9]+ of [1-9][0-9]* gazers here
+screenshot 01-host-after
+@guest screenshot 02-guest-after
+wait 5000
+waitlog 40 \[bt\] field compare #[0-9]+: records
+@both action bt_sync 0
+waitlog 5 \[bt\] r31 status: extra: .*respawn hooked \(tx [1-9]
+@guest waitlog 5 \[bt\] r31 status: extra: .*respawn on \(tx 0 rx 1 ok 1 no 0
+nolog \[bt\] extra: byte check FAILED
+@guest nolog \[bt\] extra: byte check FAILED
+nolog FAULTED
+@guest nolog FAULTED
+nolog \[bt\] sync off
+@guest nolog \[bt\] sync off
+nolog \[bt\] sync: a bad BTS1
+@guest nolog \[bt\] sync: a bad BTS1

@@ -1,0 +1,61 @@
+# Round 31 stage 0 (docs/enemy-sync.md 25), part b3 (see bt-r31-probe-a for the batch): the kill look and the crater's persistence.
+#   36 0 0 1: the nearest killable gazer killed with reason 0x74FB05EE ("[bt] kill look loc L reason r: death anim (screenshot),
+#   stats d .." says which stat moves), then 36 0 0 3 (0x5414860D, the crater reason) on the next one;
+#   30 150 40 0 a crater, 28, then the save (save_guard 1 4 1, the run's scratch copy), save_guard 3 (the newest save of this run
+#   loaded) and 28 / 15 after the load: "[bt] crater: n records" with the crater still listed means the craters persist.
+# Stage 0 fix (run 20261127-220439: save_guard 3 "no host-held save session"): solo has no session, so coop_session 5 in a
+# hidden solo run with the save redirect calls the pause menu's Load itself ("[coop] test: pause-menu Load .. requested
+# (solo)"); the reload is seen as the local player entity going to 0 and back, then waitworld.
+# covers: research
+# select: probe
+role solo
+graphics low
+timeout 360
+start control 200
+goto bt-field-mknot-s
+action dev_god 2
+wait 3000
+action bt_probe 1
+waitlog 10 \[bt\] byte checks: [0-9]+/[0-9]+ ok
+action bt_probe 28
+waitlog 10 \[bt\] r31 probe byte checks: [0-9]+/[0-9]+ ok
+waitlog 5 \[bt\] crater: -?[0-9]+ records
+# ---- 36: the kill look, two reasons
+action bt_probe 36 0 0 1
+waitnew 5 \[bt\] kill look loc [0-9A-F]{8} reason 0x74FB05EE killer [0-9A-F]{8}: armed
+wait 1000
+screenshot 01-kill-74fb-2s
+waitnew 10 \[bt\] kill look loc [0-9A-F]{8} reason 0x74FB05EE: death anim
+action bt_probe 36 0 0 3
+waitnew 5 \[bt\] kill look loc [0-9A-F]{8} reason 0x5414860D killer [0-9A-F]{8}: armed
+wait 1000
+screenshot 02-kill-5414-2s
+waitnew 10 \[bt\] kill look loc [0-9A-F]{8} reason 0x5414860D: death anim
+# ---- 30: a crater 150 m ahead, then the save and the load
+action bt_probe 30 150 40 0
+waitnew 5 \[bt\] crater add: pending, gen
+waitnew 15 \[bt\] crater add \+12 s: gen
+action bt_probe 28
+waitnew 5 \[bt\] crater: -?[0-9]+ records
+screenshot 03-crater-before-save
+until 30 1500 \[save\] #[0-9]+ pending \(forced save F[0-9]+\): auto save => action save_guard 1 4 1
+waitlog 60 \[save\] finished ok: #[0-9]+ \(forced save F[0-9]+\)
+wait 2000
+action save_guard 3
+waitnew 10 \[coop\] test: pause-menu Load \(0x142636990\) of type [0-9]+ index [0-9]+ requested \(solo\)
+waitnew 60 \[sync\] local player entity [0-9A-F]+ -> 0{16}
+waitnew 120 \[sync\] local player entity 0{16} -> 0*[1-9A-F]
+waitworld 120
+wait 5000
+action bt_probe 28
+waitnew 5 \[bt\] crater: -?[0-9]+ records
+action bt_probe 15
+waitnew 5 \[bt\] wx2 here: region
+screenshot 04-after-load
+action bt_probe 0
+waitlog 5 \[bt\] probe stop
+nolog \[bt\] FATAL-GUARD
+nolog \[bt\] r31 probe byte check FAILED
+nolog \[bt\] probe byte check FAILED
+nolog \[bt\] .*FAULTED
+quit

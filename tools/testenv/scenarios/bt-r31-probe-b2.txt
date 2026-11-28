@@ -1,0 +1,122 @@
+# Round 31 stage 0 (docs/enemy-sync.md 25), part b2 (see bt-r31-probe-a for the batch): the blast, the craters, the catcher.
+#   29 m fx: the voidout's own blast sequence (no GameOver flow, Sam far enough away) 600 m ahead with fx 1 (the effector watch:
+#   "[bt] fx effector res .. match m"), fx 0 (none), fx 3, then 1000 m and 300 m with fx 3; screenshots at +0.2 / +2 / +5 / +8 s;
+#   "[bt] blast done (..): ref released yes, flow calls 0" (the blast alone never reaches the GameOver flow);
+#   30 150 40 0: a crater added through the pending list ("[bt] crater add +9 s: gen g in the records"), a screenshot at +12 s,
+#   28 the list, 30 0 40 1 (IsDisableCrater) at Sam; 33 0: FUN_142A928C0(0) (bring a catcher), 31, 33 1 (kill it).
+# Stage 0 fix (run 20261127-205812): the catcher records went 3 -> 0 by themselves within 15 s, so 33 1 found none; the kill now
+# follows the bring's +5 s line, and the catcher log (32) is on from the bring (the per-notify lines, the drop total). The fx GUID
+# is read at +0x08 now ("match 1|3", "+0x28 FadeStart +0x2C FadeRange"); the blast's ref node is the game's 24-byte one.
+# covers: research
+# select: probe
+role solo
+graphics low
+timeout 360
+start control 200
+goto bt-field-mknot-s
+action dev_god 2
+wait 3000
+action bt_probe 1
+waitlog 10 \[bt\] byte checks: [0-9]+/[0-9]+ ok
+action bt_probe 28
+waitlog 10 \[bt\] r31 probe byte checks: [0-9]+/[0-9]+ ok
+waitlog 5 \[bt\] crater: -?[0-9]+ records
+# the pass-through counters (16) for the whole run: the effector creator's and the catcher notify's threads (read at the end)
+action bt_probe 16 600
+waitlog 5 \[bt\] threads: [0-9]+ of 10 pass-through counters in
+# ---- 29 600 1
+action bt_probe 29 600 1
+waitnew 5 \[bt\] blast at \(.*\) m [0-9]+: entity 0x
+wait 200
+screenshot 01-blast-600-1-0s2
+wait 1800
+screenshot 01-blast-600-1-2s
+wait 3000
+screenshot 01-blast-600-1-5s
+wait 3000
+screenshot 01-blast-600-1-8s
+waitnew 15 \[bt\] blast done
+# ---- 29 600 0
+action bt_probe 29 600 0
+waitnew 5 \[bt\] blast at \(.*\) m [0-9]+: entity 0x
+wait 200
+screenshot 02-blast-600-0-0s2
+wait 1800
+screenshot 02-blast-600-0-2s
+wait 3000
+screenshot 02-blast-600-0-5s
+wait 3000
+screenshot 02-blast-600-0-8s
+waitnew 15 \[bt\] blast done
+# ---- 29 600 3
+action bt_probe 29 600 3
+waitnew 5 \[bt\] blast at \(.*\) m [0-9]+: entity 0x
+wait 200
+screenshot 03-blast-600-3-0s2
+wait 1800
+screenshot 03-blast-600-3-2s
+wait 3000
+screenshot 03-blast-600-3-5s
+wait 3000
+screenshot 03-blast-600-3-8s
+waitnew 15 \[bt\] blast done
+# ---- 29 1000 3
+action bt_probe 29 1000 3
+waitnew 5 \[bt\] blast at \(.*\) m [0-9]+: entity 0x
+wait 200
+screenshot 04-blast-1000-3-0s2
+wait 1800
+screenshot 04-blast-1000-3-2s
+wait 3000
+screenshot 04-blast-1000-3-5s
+wait 3000
+screenshot 04-blast-1000-3-8s
+waitnew 15 \[bt\] blast done
+# ---- 29 300 3
+action bt_probe 29 300 3
+waitnew 5 \[bt\] blast at \(.*\) m [0-9]+: entity 0x
+wait 200
+screenshot 05-blast-300-3-0s2
+wait 1800
+screenshot 05-blast-300-3-2s
+wait 3000
+screenshot 05-blast-300-3-5s
+wait 3000
+screenshot 05-blast-300-3-8s
+waitnew 15 \[bt\] blast done
+# ---- 30: a crater 150 m ahead through the pending list, 28, then IsDisableCrater at Sam
+action bt_probe 30 150 40 0
+waitnew 5 \[bt\] crater add: pending, gen
+waitnew 15 \[bt\] crater add \+9 s: gen
+waitnew 6 \[bt\] crater add \+12 s: gen
+screenshot 06-crater-12s
+action bt_probe 28
+waitnew 5 \[bt\] crater: -?[0-9]+ records
+action bt_probe 30 0 40 1
+waitnew 5 \[bt\] crater add: pending, gen
+waitnew 15 \[bt\] crater add \+12 s: gen
+# ---- 33: bring a catcher, 31, kill it (the catcher log on)
+action bt_probe 32 120
+waitnew 5 \[bt\] cat log on for 120 s
+action bt_probe 33 0
+waitnew 5 \[bt\] cat bring: FUN_142A928C0\(0\) called
+waitnew 10 \[bt\] cat bring: record
+screenshot 07-catcher-5s
+action bt_probe 31
+waitnew 5 \[bt\] cat mgr: records
+action bt_probe 33 1
+waitnew 5 \[bt\] cat bring: FUN_142A928C0\(1\) called
+waitnew 10 \[bt\] cat bring: record
+screenshot 08-catcher-kill
+wait 10000
+action bt_probe 31
+waitnew 5 \[bt\] cat mgr: records
+action bt_probe 16
+waitnew 5 \[bt\] wx job state at 17CF0: idle
+action bt_probe 0
+waitlog 5 \[bt\] probe stop
+nolog \[bt\] FATAL-GUARD
+nolog \[bt\] r31 probe byte check FAILED
+nolog \[bt\] probe byte check FAILED
+nolog \[bt\] .*FAULTED
+quit

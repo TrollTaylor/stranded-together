@@ -1,0 +1,50 @@
+# Round 31 stage 0 (docs/enemy-sync.md 25), part a2 (see bt-r31-probe-a for the batch): the rain-gone comeback and the rain spots.
+#   18 sun 30 s (the field's gazers killed by the rain's end), then 18 heavy rain 90 s (the comeback: "[bt] wx apply gazer loc" lines with
+#   +0x180 back above 0 / new actors); 15 for the spot list; 19 a rain spot 40 m ahead refreshed for 20 s, then a dry spot once.
+# Look at: "[bt] wx spot +t: raw .. ours yes/no life l" (the spot expires about 10 s after its last refresh) and
+# "[bt] wx spot owner: never touched" (the game only compares the owner key: RS may ship; the design makes it a pass gate).
+# covers: research
+# select: probe
+role solo
+graphics low
+timeout 360
+start control 200
+goto bt-field-mknot-s
+action dev_god 2
+wait 3000
+action bt_probe 1
+waitlog 10 \[bt\] byte checks: [0-9]+/[0-9]+ ok
+# (stage 0 fix: waitnew sees only lines written since the previous step started, so a synchronous op's lines are waited on once,
+# right after the action; run 20261127-205038 failed on a second waitnew.)
+action bt_probe 15
+waitnew 5 \[bt\] wx2 here: region
+waitlog 10 \[bt\] r31 probe byte checks: [0-9]+/[0-9]+ ok
+# ---- 18: sun 30 s, then rain 90 s (the comeback)
+action bt_probe 18 -1 0 30
+waitnew 5 \[bt\] wx apply on: region [0-9]+
+waitnew 45 \[bt\] wx apply restored: eff0
+action bt_probe 18 -1 3 90
+waitnew 5 \[bt\] wx apply on: region [0-9]+
+wait 45000
+screenshot 01-comeback-45s
+waitnew 60 \[bt\] wx apply: restoring
+waitnew 20 \[bt\] wx apply restored: eff0
+action bt_probe 15
+waitnew 5 \[bt\] wx2 here: region
+# ---- 19: a rain spot 40 m ahead (r 50), refreshed for 20 s; then a dry spot once
+action bt_probe 19 40 50 2 1
+waitnew 5 \[bt\] wx spot on: kind 2
+wait 10000
+screenshot 02-spot-10s
+waitnew 45 \[bt\] wx spot owner: never touched
+action bt_probe 19 40 50 0 0
+waitnew 5 \[bt\] wx spot on: kind 0
+waitnew 45 \[bt\] wx spot owner: never touched
+nolog \[bt\] wx spot owner: TOUCHED
+action bt_probe 0
+waitlog 5 \[bt\] probe stop
+nolog \[bt\] FATAL-GUARD
+nolog \[bt\] r31 probe byte check FAILED
+nolog \[bt\] probe byte check FAILED
+nolog \[bt\] .*FAULTED
+quit

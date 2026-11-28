@@ -1,0 +1,68 @@
+# Round 31 stage 8 gate (the round 31 build spec, Stage 8; module bt_extra): leg K (a realized gazer killed; the death on screen).
+# The host kills gazer 40AB1A93 (bt_sync 7, its copy 59 m away); the guest, in rain 29.6 m from her copy, applies it with
+# +0xCC = 0x5414860D (bt_extra::KillLookReason; stats d 0 / 0, PF 21). The GO needs a REALIZED gazer (state 2 with an entity
+# before the kill: the "gz dump" line) and its death on her screenshots at +0.5, +2 and +5 s (03 / 04 / 05), not the log text.
+# KillGuard takes a realized copy (state 2, bit 0x1) only with the kill look on (allow_realized: bt_sync asks extra::KillLookOn,
+# bt_world's KillNow passes it for 0x5414860D): this leg is the first time the update's kill path runs on a state-2 gazer. If
+# the realized gazer shows no death look, the kill look is DROPPED (bt_kill_look stays 0).
+# Look at: 01 (before), 03 / 04 / 05 (the death on the guest), 02 (the host's copy gone).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-kill-look -SeedSaves complete-100 -GuestSeed profile-only -Id round31-bt-extra
+# From the launcher-generated ini (launcherini local-test: the launcher's Local test already writes host_save=1, a sandboxed
+# guest; testenv refuses an added host_save line with launcherini) plus the key under test.
+# covers: bt-extra
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini bt_sync=2
+ini bt_kill_look=1
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[bt\] sync: bt_sync=2 as the host
+@guest waitlog 5 \[bt\] sync: bt_sync=2 as the guest
+waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role guest
+@guest waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role host
+waitlog 30 \[bt\] extra: byte checks: [0-9]+/[0-9]+ ok; kill look ok
+@guest waitlog 30 \[bt\] extra: byte checks: [0-9]+/[0-9]+ ok; kill look ok
+waitlog 10 \[bt\] world byte checks: [0-9]+/[0-9]+ ok; hook ok, kill ok
+@guest waitlog 10 \[bt\] world byte checks: [0-9]+/[0-9]+ ok; hook ok, kill ok
+@both action dev_god 2
+@both action dev_weather 1
+wait 3000
+goto bt-field-mknot-s
+@guest goto -1010 40 0
+wait 15000
+waitlog 20 \[bt\] field compare #[0-9]+: records equal .*bt211_01
+@guest waitlog 20 \[bt\] field compare #[0-9]+: records equal .*bt211_01
+# the guest's copy realized: state 2 with an entity (the probe's gazer dump)
+@guest until 60 3000 \[bt\] gz dump loc 40AB1A93 \([0-9]+ m\): .* state 2 .* entity 0x[1-9A-F][0-9A-F]* => action bt_probe 20
+@guest screenshot 01-guest-before
+# ---- the kill: the host's test kill; the guest applies it with the kill-look reason
+action bt_sync 7 0x40AB 0x1A93
+waitlog 5 \[bt\] test kill loc 40AB1A93 .*armed
+waitlog 10 \[bt\] KILL sent \(test\): loc 40AB1A93
+@guest waitlog 5 \[bt\] KILL received: loc 40AB1A93 .*sandboxed
+@guest waitlog 10 \[bt\] extra: kill look armed: reason 0x5414860D \(stats 0x79 [0-9]+ 0x7A [0-9]+\)
+@guest waitlog 10 \[bt\] extra: kill applied: loc 40AB1A93 \(id [0-9A-F]+\) reason 0x5414860D .*realized yes \(state 2, entity 0x[1-9A-F]
+wait 500
+@guest screenshot 03-guest-kill-0.5s
+wait 1500
+@guest screenshot 04-guest-kill-2s
+wait 3000
+@guest screenshot 05-guest-kill-5s
+@guest waitlog 10 \[bt\] partner kill applied loc 40AB1A93 .*death edge seen
+@guest waitlog 15 \[bt\] extra: kill look \(5 s after the last applied kill\): [1-9][0-9]* applied \(realized [1-9][0-9]*\), stats d 0 / 0
+waitlog 10 \[bt\] test kill loc 40AB1A93: applied here, death edge seen
+screenshot 02-host-killed
+# ---- stop: the counters
+@both action bt_sync 0
+@guest waitlog 5 \[bt\] r31 status: extra: kill look on \([1-9][0-9]* applied, [1-9][0-9]* realized, stats d 0/0\)
+nolog \[bt\] extra: byte check FAILED
+@guest nolog \[bt\] extra: byte check FAILED
+nolog FAULTED
+@guest nolog FAULTED
+nolog \[bt\] sync off
+@guest nolog \[bt\] sync off
+nolog \[bt\] sync: a bad BTS1
+@guest nolog \[bt\] sync: a bad BTS1

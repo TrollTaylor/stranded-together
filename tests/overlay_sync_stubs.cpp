@@ -438,6 +438,9 @@ bool Command(const double (&)[3], char* msg, std::size_t cap) noexcept { return 
 }  // namespace st::etarget
 namespace st::bt {  // round 28 P3 (bt_sync.cpp)
 bool Command(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "bt probe (stub)"), true; }
+bool Command(const double (&)[3], const double (&)[2], char* msg, std::size_t cap) noexcept {  // round 31: bt_probe's 4th / 5th numbers
+    return std::snprintf(msg, cap, "bt probe (stub)"), true;
+}
 void Tick(double) noexcept {}
 bool SyncCommand(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "bt sync (stub)"), true; }  // round 28 B1
 void EmergencyStop() noexcept {}

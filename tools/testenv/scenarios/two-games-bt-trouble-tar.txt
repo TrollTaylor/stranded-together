@@ -1,0 +1,69 @@
+# Round 31 stage 4 gate (the round 31 build spec, Stage 4; module bt_tar): leg T (a sandboxed guest).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-trouble-tar -SeedSaves complete-100 -GuestSeed profile-only -Id round31-bt-tar
+# From the launcher-generated ini (launcherini local-test: the launcher's Local test already writes host_save=1, a sandboxed
+# guest; testenv refuses an added host_save line with launcherini) plus the key under test.
+# The host's test HUNT (bt_sync 8, bt_hunt.cpp: centred on the host's Sam, r 12 m, 20 s, then CLEAR) reaches the guest as type 11;
+# bt_tar puts its record in the guest's hm+0xD0 list (list 0) under hm+0x130, the guest's Sam (7 m from the host, downhill, so
+# under the record's top) feels it (+0x844), the CLEAR takes it out. The host gets no HUNT back: no record there.
+# No dev_god (the guest's health is evidence), no dev_weather (timefall would wear the cargo the record-out line reads).
+# Look at: 01 (the guest in the partner's tar).
+# Uses: bt_hunt's op 8 and its cap 0x400 in the hello (bt_hunt.cpp), bt_tar routed for type 11 (bt_sync.cpp FeatureMsg).
+# covers: bt-tar
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini bt_sync=2
+ini bt_tar=1
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[bt\] sync: bt_sync=2 as the host
+@guest waitlog 5 \[bt\] sync: bt_sync=2 as the guest
+waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role guest
+@guest waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role host
+@guest waitlog 5 \[bt\] tar: the partner's hello: bt_sync 2, role 1, HUNT cap yes \(the tar feel can run here\)
+# the checks run at that hello (bt_tar.cpp OnHello; run 20261128-011702 had them only at the first HUNT)
+@guest waitlog 30 \[bt\] tar: byte checks 8/8 ok
+wait 3000
+goto bt-field-mknot-s
+@guest goto -1046 36 0
+wait 15000
+# ---- the host's test HUNT: the guest's record in, the guest's Sam in it, the CLEAR out
+action bt_sync 8
+waitlog 5 \[bt\] hunt: test HUNT: episode [0-9]+ at \(.*\): UP r 12 m
+# waitlog, not waitnew (run 20261128-021023): the guest's UP line (guest 49.969) comes ~15-60 ms after the host's action, while
+# the action step's ack (0.2 s there) still runs, so it is older than the step above and a waitnew (lines since the previous
+# step started) cannot see it. The same holds for the record-in line, written in the same ms (run 20261128-011815: the
+# realsave leg's not-felt line). This scenario has one HUNT, so these are its first UP, record-in and Sam-in lines.
+@guest waitlog 8 \[bt\] hunt: partner hunt UP at \(.*\) r 12 m
+@guest waitlog 5 \[bt\] tar: record in \(hm\+0xD0 1/10\) at \([0-9. -]+\) r 12\.0 m h 2\.0, Sam [0-9.]+ m from its centre \(episode [0-9]+\)
+@guest waitlog 10 \[bt\] tar: Sam in it \(\+0x844 (0\.[5-9]|1\.0)
+@guest screenshot 01-guest-in-the-partners-tar
+@guest waitnew 5 \[bt\] tar: \+[0-9.]+ s: Sam inside yes .*hm140 0x0,
+# the cargo read is required (n >= 1 pieces, none lost), not its value: it is the read that decides kRealSaveOk (build spec
+# stage 4: "GO (a real-save guest only if the gate reads cargo d 0)"), not a pass line of the sandboxed feel; the guest does
+# not move in this episode, so it is a clean read (tar-feel-echo's leg C is the no-record control at the same spot)
+@guest waitnew 30 \[bt\] tar: record out \((the partner's hunt ended \(CLEAR\)|no HUNT for 3 s)\): removed yes, count 0; .*; hm140 0x0; health ([0-9.]+) -> \2; game (0x[0-9A-F]+) -> \3; cargo d -?[0-9]+\.[0-9]{3} \([1-9][0-9]* pieces\)
+wait 4000
+# ---- stop: the counters on both
+@both action bt_sync 0
+@guest waitlog 5 \[bt\] r31 status: tar: bt_tar=1, record out, in [1-9][0-9]* out [1-9][0-9]* \(game 0\) moved [0-9]+, faults 0; hunt rx [1-9][0-9]* \(bad 0,
+waitlog 5 \[bt\] r31 status: tar: bt_tar=1, record out, in 0 out 0 \(game 0\) moved 0, faults 0; hunt rx 0
+nolog \[bt\] tar: record in
+nolog \[bt\] tar: byte check FAILED
+@guest nolog \[bt\] tar: byte check FAILED
+nolog \[bt\] tar: off:
+@guest nolog \[bt\] tar: off:
+@guest nolog \[bt\] tar: .*FAULTED
+@guest nolog \[bt\] tar: .*hm140 0x[1-9A-F]
+@guest nolog \[bt\] tar: record out \(the game took it out of the list\)
+@guest nolog \[bt\] tar: list full
+@guest nolog \[bt\] tar: not felt
+nolog \[bt\] sync: a bad BTS1
+@guest nolog \[bt\] sync: a bad BTS1
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest quit
+wait 3000
+quit

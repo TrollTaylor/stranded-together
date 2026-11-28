@@ -1,0 +1,102 @@
+# Round 31 stage 6 gate (the round 31 build spec, Stage 6; module bt_void): legs 1 (VB at 600 / 150 m) and 4 (the near leg, dev_god 0), a sandboxed guest.
+# Leg 1 (VB, at the start spot: no BT field): the host's test VOID2 600 m from the guest's body (bt_sync 9 600 1: on the line
+# from the guest towards the host, at the guest's height), then 150 m. The guest plays the partner blast there with the flash's
+# FadeStart 150 / FadeRange 450 written into the voidout effector's resource for 9 s, restores 11500 / 11800 and releases the
+# blast's ref at 16 s. Look at (the reviewer): 01c-guest-600m-5s mean luminance under 200 (the flash faded out at 600 m),
+# 02c-guest-150m-5s over 200 (full at 150 m); 01a / 02a the first frame, b / d at 2 / about 7.5 s (d before the 9 s close line,
+# which waitnew must see after it). The guest's blast line is a waitlog (its distance makes it unique): it can be written before
+# the host's waitnew starts. After leg 1b: no OTGC WRITE on either game (the crater run's guest wrote urn:otgc_set_mission_progress
+# after a 150 m blast plus its crater; this leg is the blast alone), else the run stops before the near leg.
+# Leg 4 (the near leg, the guest mortal: dev_god 0): blasts at 0, 30 and 90 m from the guest; each must log "near check +12 s
+# ...: unchanged" (Sam's health within 0.5, no GameOver flow call, the hunter area hm+0x140 the same, no GameOver bit). The
+# vehicle / cargo part of leg 4 is not here (no vehicle hp or cargo reader yet): the real-save 300 m floor stays until it is.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-void -SeedSaves complete-100 -GuestSeed profile-only -Id round31-bt-void
+# From the launcher-generated ini (launcherini local-test: the launcher's Local test already writes host_save=1, a sandboxed
+# guest; testenv refuses an added host_save line with launcherini) plus the key under test.
+# covers: bt-void
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini bt_sync=2
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[bt\] sync: bt_sync=2 as the host
+@guest waitlog 5 \[bt\] sync: bt_sync=2 as the guest
+waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role guest
+@guest waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role host
+waitlog 5 \[bt\] void: partner hello: VOID2 yes
+@guest waitlog 5 \[bt\] void: partner hello: VOID2 yes
+@both action dev_god 2
+wait 3000
+# ---- leg 1a: 600 m (the far resource, the flash faded out)
+action bt_sync 9 600 1
+waitnew 5 \[bt\] void: test VOID2 #[0-9]+ at .*: (599|600|601) m from the partner's body.*: sent
+@guest waitlog 10 \[bt\] void: partner voidout blast at .* (59[5-9]|60[0-5]) m from you: far resource, flash fade 150/450 m
+@guest screenshot 01a-guest-600m-0s
+wait 1800
+@guest screenshot 01b-guest-600m-2s
+wait 3000
+@guest screenshot 01c-guest-600m-5s
+wait 1800
+@guest screenshot 01d-guest-600m-7s
+@guest waitnew 6 \[bt\] void: voidout flash window closed \(9 s\): fade restored \((already )?FadeStart 11500 FadeRange 11800\)
+@guest waitnew 6 \[bt\] void: partner blast near check \+12 s .*: unchanged
+@guest waitnew 8 \[bt\] void: partner voidout blast done \(16 s\): ref released
+wait 2000
+# ---- leg 1b: 150 m (the flash full)
+action bt_sync 9 150 1
+waitnew 5 \[bt\] void: test VOID2 #[0-9]+ at .*: (149|150|151) m from the partner's body.*: sent
+@guest waitlog 10 \[bt\] void: partner voidout blast at .* (14[5-9]|15[0-5]) m from you: (far|near) resource, flash fade 150/450 m
+@guest screenshot 02a-guest-150m-0s
+wait 1800
+@guest screenshot 02b-guest-150m-2s
+wait 3000
+@guest screenshot 02c-guest-150m-5s
+wait 1800
+@guest screenshot 02d-guest-150m-7s
+@guest waitnew 6 \[bt\] void: voidout flash window closed \(9 s\): fade restored \((already )?FadeStart 11500 FadeRange 11800\)
+@guest waitnew 6 \[bt\] void: partner blast near check \+12 s .*: unchanged
+@guest waitnew 8 \[bt\] void: partner voidout blast done \(16 s\): ref released
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+wait 2000
+# ---- leg 4: the near leg, the guest mortal
+@guest action dev_god 0
+wait 2000
+action bt_sync 9 0 1
+waitnew 5 \[bt\] void: test VOID2 #[0-9]+ at .*: (-1|0|1) m from the partner's body.*: sent
+@guest waitlog 10 \[bt\] void: partner voidout blast at .* [0-9] m from you: (far|near) resource, flash fade 150/450 m
+@guest screenshot 04a-guest-0m-1s
+@guest waitnew 15 \[bt\] void: partner blast near check \+12 s .*: unchanged
+@guest waitnew 6 \[bt\] void: partner voidout blast done \(16 s\): ref released
+wait 2000
+action bt_sync 9 30 1
+waitnew 5 \[bt\] void: test VOID2 #[0-9]+ at .*: (29|30|31) m from the partner's body.*: sent
+@guest waitlog 10 \[bt\] void: partner voidout blast at .* (2[5-9]|3[0-5]) m from you: (far|near) resource, flash fade 150/450 m
+@guest screenshot 04b-guest-30m-1s
+@guest waitnew 15 \[bt\] void: partner blast near check \+12 s .*: unchanged
+@guest waitnew 6 \[bt\] void: partner voidout blast done \(16 s\): ref released
+wait 2000
+action bt_sync 9 90 1
+waitnew 5 \[bt\] void: test VOID2 #[0-9]+ at .*: (89|90|91) m from the partner's body.*: sent
+@guest waitlog 10 \[bt\] void: partner voidout blast at .* (8[5-9]|9[0-5]) m from you: (far|near) resource, flash fade 150/450 m
+@guest screenshot 04c-guest-90m-1s
+@guest waitnew 15 \[bt\] void: partner blast near check \+12 s .*: unchanged
+@guest waitnew 6 \[bt\] void: partner voidout blast done \(16 s\): ref released
+wait 2000
+@guest action dev_god 2
+@guest nolog \[bt\] void: partner blast near check .*CHANGED
+@guest nolog \[bt\] void: partner voidout blast dropped
+nolog \[bt\] void: .*FAULTED
+@guest nolog \[bt\] void: .*FAULTED
+nolog \[bt\] void: byte check FAILED
+@guest nolog \[bt\] void: byte check FAILED
+nolog \[bt\] void: .*NOT sent
+@guest nolog \[bt\] void: voidout flash window closed .*(changed|FAILED|did not finish)
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest quit
+wait 3000
+quit

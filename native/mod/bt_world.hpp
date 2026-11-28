@@ -32,7 +32,13 @@ bool HookIn() noexcept;
 // `id`: its actor id (+0x08) now; review (crash 3): the update kills it only while +0x08 still reads that (the actor freed and
 // another made at that address in between: applied = kApplyStale, nothing written).
 // False when the hook is out, all 8 slots are armed or that actor is armed already.
-bool ArmKill(std::uintptr_t actor, std::uint32_t id, std::uint8_t tag) noexcept;
+// Round 31 (bt_probe 36 kill_look): `reason` the +0xCC reason written (0 = the rain-gone 0x01322187, the default) and `killer`
+// the +0xD0 killer id (0 = the gazer's own id, the default; kKillerZero writes 0: the local Sam's id is 0, stage 0); every other
+// caller keeps the round 30 kill. `allow_realized`: KillGuard also takes a realized copy (state 2; flags mask 0x8) for this slot;
+// only bt_sync's partner-kill arm with the kill look on (bt_kill_look=1) passes true; bt_probe 36 and every other caller false.
+constexpr std::uint32_t kKillerZero = 0xFFFFFFFFu;
+bool ArmKill(std::uintptr_t actor, std::uint32_t id, std::uint8_t tag, std::uint32_t reason = 0, std::uint32_t killer = 0,
+             bool allow_realized = false) noexcept;
 // Game thread: takes an armed kill back. True when it was still pending (the update never took it).
 bool Disarm(std::uintptr_t actor) noexcept;
 bool Armed(std::uintptr_t actor) noexcept;
@@ -63,6 +69,15 @@ bool SceneOwner(std::uintptr_t actor, std::uintptr_t* out) noexcept;
 // P1 (bt_probe 9): the update's calls on the Tick thread and on others, the distinct threads (+ more than 8).
 void NoteTickThread() noexcept;
 void Threads(unsigned* tick, unsigned* other, unsigned* threads, bool* over) noexcept;
+
+// Round 31 (bt_probe 22 gz_mirror): one callback run inside the detour right after the original update, on the game thread, for
+// every gazer updated (nullptr: none). It must be quick, take guarded writes only and never log. EmergencyStop clears it.
+// Round 31 features: one slot per user, called in slot order (the probe's, bt_mirror's, bt_extra's); each user sets and clears
+// only its own slot. The one-argument form is the probe's slot (bt_probe_r31.cpp).
+using AfterUpdateFn = void (*)(std::uintptr_t actor) noexcept;
+enum AfterSlot : unsigned { kAfterProbe = 0, kAfterMirror = 1, kAfterExtra = 2, kAfterSlots = 3 };
+void SetAfterUpdate(AfterUpdateFn fn) noexcept;
+void SetAfterUpdate(AfterSlot slot, AfterUpdateFn fn) noexcept;
 
 // EmergencyStop: the detour goes straight through; armed kills dropped.
 void EmergencyStop() noexcept;

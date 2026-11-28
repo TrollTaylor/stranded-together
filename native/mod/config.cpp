@@ -182,6 +182,34 @@ Config LoadConfig(const std::wstring& dir) {
                 c.bt_kill = btrules::SyncLevel(std::atof(v.c_str()));
                 continue;
             }
+            {  // round 31 BT: the level keys, each 0..its most (malformed / negative 0)
+                struct LevelKey {
+                    const char* name;
+                    int Config::*field;
+                    int max;
+                };
+                static const LevelKey kLevels[] = {
+                    {"bt_weather", &Config::bt_weather, 2}, {"bt_rain", &Config::bt_rain, 1},       {"bt_tar", &Config::bt_tar, 2},
+                    {"bt_gazer_mirror", &Config::bt_gazer_mirror, 1}, {"bt_void", &Config::bt_void, 2}, {"bt_catcher", &Config::bt_catcher, 1},
+                    {"bt_crystals", &Config::bt_crystals, 1}, {"bt_respawn", &Config::bt_respawn, 1}, {"bt_sky", &Config::bt_sky, 1},
+                    {"bt_kill_look", &Config::bt_kill_look, 1}};
+                bool took = false;
+                for (const LevelKey& lk : kLevels)
+                    if (k == lk.name) {
+                        c.*lk.field = btrules::CfgLevel(std::atof(v.c_str()), lk.max);
+                        took = true;
+                        break;
+                    }
+                if (took) continue;
+            }
+            if (k == "bt_test_real_save") {  // round 31: a hidden-run guest's real-save stand-in (bt_sync.cpp SandboxedHere)
+                c.bt_test_real_save = ParseBool(v);
+                continue;
+            }
+            if (k == "bt_void_flash_m") {  // round 31: 0..5000, malformed / negative the default 150
+                c.bt_void_flash_m = btrules::FlashStartM(std::atof(v.c_str()));
+                continue;
+            }
             {
                 cfgval::TakeKeys tk2{c.enemy_take_know, c.enemy_take_know_secs, c.enemy_take_camp, c.enemy_ticket_return,
                                      c.enemy_single_hold_vehicle, c.enemy_single_rule, c.enemy_take_role, c.enemy_take_face};
@@ -606,6 +634,11 @@ Config LoadConfig(const std::wstring& dir) {
     if (c.bt_sync) Log("[config] bt_sync=%d (BT field sync: FIELD / NOTICED / VOID%s)", c.bt_sync, c.bt_sync >= 2 ? " / RESET applied on the guest" : "");
     if (c.bt_sync) Log("[config] bt_trouble=%d bt_markers=%d bt_kill=%d (%s)", c.bt_trouble ? 1 : 0, c.bt_markers ? 1 : 0, c.bt_kill,
                        c.bt_kill >= 2 ? "partner kills applied" : c.bt_kill == 1 ? "kills relayed, not applied" : "kills off");
+    if (c.bt_sync)
+        Log("[config] bt_weather=%d bt_rain=%d bt_tar=%d bt_gazer_mirror=%d bt_void=%d bt_catcher=%d bt_crystals=%d bt_respawn=%d bt_sky=%d "
+            "bt_kill_look=%d bt_void_flash_m=%d bt_test_real_save=%d%s",
+            c.bt_weather, c.bt_rain, c.bt_tar, c.bt_gazer_mirror, c.bt_void, c.bt_catcher, c.bt_crystals, c.bt_respawn, c.bt_sky, c.bt_kill_look,
+            c.bt_void_flash_m, c.bt_test_real_save ? 1 : 0, c.bt_test_real_save ? " (a hidden-run guest counts as on her own real save)" : "");
     Log("[config] self_voice=%s voice_sync=%d voice_subtitles=%d sound_sync=%d sound_steps=%d partner_volume=%d vehicle_sound=%d",
         selfvoice::ModeName(c.self_voice), c.voice_sync ? 1 : 0, c.voice_subtitles ? 1 : 0, c.sound_sync ? 1 : 0, c.sound_steps ? 1 : 0, c.partner_volume,
         c.vehicle_sound ? 1 : 0);

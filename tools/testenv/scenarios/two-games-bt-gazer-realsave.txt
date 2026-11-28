@@ -1,0 +1,87 @@
+# Round 31 stage 5 gate (the round 31 build spec, Stage 5; module bt_mirror): the host_save=0 leg (the yaw only).
+# The guest mirrors as a real-save guest would (bt_sync 13 1, hidden runs only: a hidden run's saves are always redirected, so
+# the host_save=0 leg is rehearsed): the yaw only, no kind, no agitation pair, no drop hooks. Log lines "[bt] mirror: ...".
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-gazer-realsave -SeedSaves complete-100 -GuestSeed profile-only -Id round31-bt-mirror
+# From the launcher-generated ini (launcherini local-test) plus the key under test. NOTE: that file is host_save=1 (a sandboxed
+# guest) and testenv refuses an added host_save line, so this leg uses the bt_sync 13 1 rehearsal (op 13 goes to mirror::Command).
+# covers: bt-mirror
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini bt_sync=2
+ini bt_gazer_mirror=1
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[bt\] sync: bt_sync=2 as the host
+@guest waitlog 5 \[bt\] sync: bt_sync=2 as the guest
+waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role guest
+@guest waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role host
+waitlog 10 \[bt\] mirror: partner hello: GZST2 offered
+@guest waitlog 10 \[bt\] mirror: partner hello: GZST2 offered
+nolog \[bt\] mirror: byte check FAILED
+@guest nolog \[bt\] mirror: byte check FAILED
+@both action dev_god 2
+@both action dev_weather 1
+@guest action bt_sync 13 1
+@guest waitlog 5 \[bt\] mirror: test: this game mirrors as a real-save guest would
+wait 3000
+# ---- control leg: the host beyond 100 m from gazer 40AB1A93 (nothing of it sensed there), the guest 48 m from it (realized and
+# kept, PF 8) for 20 s; screenshots at 0 / 2 / 5 / 10 s; no mirror of 40AB1A93 may start
+goto -1090 40 0
+wait 5000
+@guest goto -1026 40 0
+wait 4000
+@guest screenshot 01-guest-control-0s
+wait 2000
+@guest screenshot 01-guest-control-2s
+wait 3000
+@guest screenshot 01-guest-control-5s
+wait 5000
+@guest screenshot 01-guest-control-10s
+wait 10000
+@guest nolog \[bt\] mirror: on: loc 40AB1A93
+# ---- mirror leg: the host 9.3 m from 40AB1A93 (NEAR there); the guest first at (-1010, 40) (29.6 m: realized), then back at
+# (-1026, 40) (48 m), her camera on the host's body (the gazer 9.3 m beyond it)
+goto -978 58 0
+waitlog 10 \[bt\] mirror: sending loc 40AB1A93
+wait 3000
+@guest goto -1010 40 0
+@guest waitlog 30 \[bt\] mirror: on: loc 40AB1A93 kind [0-9]+ .*you (2[5-9]|[3-5][0-9])\.[0-9] m .*\(real save: turn only\)
+@guest goto -1026 40 0
+wait 2000
+@guest action shots 4 10 1
+@guest waitnew 20 \[shots\] camera aimed #[0-9]+ at the partner body \(steered
+@guest screenshot 02-guest-mirror-0s
+screenshot 02-host-mirror-0s
+wait 2000
+@guest screenshot 02-guest-mirror-2s
+screenshot 02-host-mirror-2s
+wait 3000
+@guest screenshot 02-guest-mirror-5s
+screenshot 02-host-mirror-5s
+wait 5000
+@guest screenshot 02-guest-mirror-10s
+screenshot 02-host-mirror-10s
+@guest waitlog 10 \[bt\] mirror: turn loc 40AB1A93: yaw -?[0-9.]+ -> -?[0-9.]+
+@guest waitlog 10 \[bt\] mirror: \+[0-9]+ loc 40AB1A93: .*writes 0, yaw writes [1-9]
+@guest nolog \[bt\] mirror: \+[0-9]+ loc 40AB1A93: .*\+0x7C 10\.0
+@guest nolog \[bt\] mirror: \+[0-9]+ loc 40AB1A93: .*, writes [1-9]
+@guest nolog \[bt\] mirror: drop hooks in
+# ---- the host leaves: released on 2 s with no GZST2 for it (nothing to write back: the pair was never written)
+goto -1090 40 0
+# the host stops sending it (ds.exe leaves its NEAR bit set after Sam goes 113 m away, runs 20261128-012446 / -012712:
+# the sender's reach, trigger + 10 m by our own distance, ends it), then the guest releases it 2 s later
+waitlog 10 \[bt\] mirror: not sent: loc 40AB1A93:
+@guest waitlog 20 \[bt\] mirror: off: loc 40AB1A93 \(no GZST2 for 2 s\)
+@guest waitlog 5 \[bt\] mirror: off: loc 40AB1A93 .*writes 0, .*the pair never written
+@guest action bt_sync 13 2
+@guest waitlog 5 \[bt\] mirror: test: back to normal
+@guest nolog \[bt\] mirror: \+[0-9]+ loc [0-9A-F]{8}: .*hm140 0x[1-9A-F]
+@guest nolog \[bt\] mirror: off: .*GameOver yes
+@guest nolog \[bt\] mirror: back loc .*back NO
+@guest nolog \[bt\] mirror: refused: loc 40AB1A93
+nolog \[bt\] mirror: back loc .*back NO
+@guest quit
+quit

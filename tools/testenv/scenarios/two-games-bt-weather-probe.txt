@@ -1,0 +1,67 @@
+# Round 31 stage 0 (docs/enemy-sync.md 25): the weather's region map on two games (docs/enemy-sync.md 25), hidden, on the
+# launcher's own Local test files (set up as two-games-bt-field; no extra host_save line). Both at the bt211_01 field, the
+# natural forecast (no dev_weather), bt_probe 15 on both three times 60 s apart, then the host's dev_weather 1 and 15 again.
+# Run it in the bt-r31-probe-a batch (-SeedSaves complete-100 -GuestSeed profile-only).
+# Look at: both games' "[bt] wx2: slot N .. clock" and "[bt] wx2 here: region R raw x" side by side: the same slot, region and raw
+# at each read means the forecast is the same on both games (the clock and the save drive it); a different region map or
+# "(rain object = differs)" means it is not, and the host has to send it. After dev_weather 1: does the guest's raw follow?
+# Stage 0 fix (run 20261127-210425): waitnew sees only lines written since the previous step started, so "@both action bt_probe 15"
+# then a host waitnew then a guest waitnew never saw the guest's (synchronous) dump. Each game now gets its own action and waitnew.
+# covers: research
+# select: probe
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini bt_sync=2
+# bt_wx's own hooks on FUN_142E183F0 / FUN_142E17CF0 would take the probe's (MinHook: one hook per function): WX off here.
+ini bt_weather=0
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[bt\] sync: bt_sync=2 as the host
+@guest waitlog 5 \[bt\] sync: bt_sync=2 as the guest
+waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role guest
+@guest waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role host
+@both action dev_god 2
+goto bt-field-mknot-s
+@guest goto -1046 36 0
+wait 3000
+@both action bt_probe 1
+waitlog 10 \[bt\] byte checks: [0-9]+/[0-9]+ ok
+@guest waitlog 10 \[bt\] byte checks: [0-9]+/[0-9]+ ok
+# ---- 15 on each, three times 60 s apart
+action bt_probe 15
+waitnew 10 \[bt\] wx2 here: region
+@guest action bt_probe 15
+@guest waitnew 10 \[bt\] wx2 here: region
+waitlog 5 \[bt\] r31 probe byte checks: [0-9]+/[0-9]+ ok; .*void ok
+@guest waitlog 5 \[bt\] r31 probe byte checks: [0-9]+/[0-9]+ ok; .*void ok
+screenshot 01-read1
+wait 60000
+action bt_probe 15
+waitnew 10 \[bt\] wx2 here: region
+@guest action bt_probe 15
+@guest waitnew 10 \[bt\] wx2 here: region
+wait 60000
+action bt_probe 15
+waitnew 10 \[bt\] wx2 here: region
+@guest action bt_probe 15
+@guest waitnew 10 \[bt\] wx2 here: region
+screenshot 02-read3
+# ---- the host's timefall, then 15 on each
+action dev_weather 1
+wait 10000
+action bt_probe 15
+waitnew 10 \[bt\] wx2 here: region
+@guest action bt_probe 15
+@guest waitnew 10 \[bt\] wx2 here: region
+screenshot 03-host-timefall
+@both action bt_probe 0
+nolog \[bt\] FATAL-GUARD
+nolog \[bt\] r31 probe byte check FAILED
+nolog \[bt\] probe byte check FAILED
+nolog \[bt\] .*FAULTED
+@guest nolog \[bt\] FATAL-GUARD
+@guest nolog \[bt\] .*FAULTED
+quit

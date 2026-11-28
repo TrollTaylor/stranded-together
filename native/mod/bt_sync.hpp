@@ -62,7 +62,10 @@ void Tick(double now_ms) noexcept;
 // Round 30, hidden runs only: 9 the gazer update counter (first call installs it; then "[bt] gz update threads: tick N, other M
 // (threads k)"), 10 <hi16> <lo16> a kill for that locator (0 0 = the nearest live gazer), 11 <m> the guarded crater m ahead
 // (default 200), 12 the weather dump, 14 <m> the hunter area m ahead (default 30); 13 is not built.
+// Round 31 stage 0, hidden runs only (bt_probe_r31.cpp; docs/enemy-sync.md section 25): the exact integers 15..36 are the round 31
+// probes; x[0..1] are the action's 4th and 5th numbers (only bt_probe takes 5).
 bool Command(const double (&v)[3], char* msg, std::size_t cap) noexcept;
+bool Command(const double (&v)[3], const double (&x)[2], char* msg, std::size_t cap) noexcept;
 
 // Game thread, the debug action "Bt sync": v[0] = 0 the status line (the counters, "[bt] sync status (action): ..."), 1 FIELD at
 // the next census, 3 a test VOID and 4 a test NOTICED to the partner (hidden runs only). Refused with bt_sync=0.

@@ -93,6 +93,9 @@ constexpr unsigned kSlots = 8;
 std::atomic<std::uintptr_t> g_slot_actor[kSlots];  // 0 free
 std::atomic<std::uint8_t> g_slot_tag[kSlots];
 std::atomic<std::uint32_t> g_slot_id[kSlots];  // review (crash 3): the gazer's id (+0x08) when it was armed
+std::atomic<std::uint32_t> g_slot_reason[kSlots], g_slot_killer[kSlots];  // round 31: 0 = the rain-gone reason / the gazer's own id
+std::atomic<bool> g_slot_realized[kSlots];                                 // round 31: the caller's allow_realized (the kill look only)
+std::atomic<AfterUpdateFn> g_after[kAfterSlots];                         // round 31: bt_probe 22's, bt_mirror's, bt_extra's (static: null)
 
 // The event ring: a bounded MPMC queue (Vyukov) of 32; the game thread is the only consumer.
 constexpr unsigned kRing = 32;
@@ -157,13 +160,16 @@ void NoteTid(unsigned long tid) noexcept {
 }
 
 // The update's own kill (0x1429957C8), guarded by KillGuard. KillGuard's result, or kApplyFault.
-int KillNow(std::uintptr_t a) noexcept {
+int KillNow(std::uintptr_t a, std::uint32_t reason, std::uint32_t killer, bool allow_realized) noexcept {
     __try {
+        // round 31: a realized copy (leg K) only for a slot its caller armed with allow_realized (bt_sync's kill look arm with
+        // bt_kill_look=1); review (crash 3, safety 2): keyed on that flag, not on the reason (bt_probe 36 arms 0x5414860D too)
         const int g = R::KillGuard(*reinterpret_cast<const std::int32_t*>(a + kActState), *reinterpret_cast<const float*>(a + kActHealth),
-                                   *reinterpret_cast<const float*>(a + kActPrevHealth), *reinterpret_cast<const std::uint32_t*>(a + kActFlags));
+                                   *reinterpret_cast<const float*>(a + kActPrevHealth), *reinterpret_cast<const std::uint32_t*>(a + kActFlags),
+                                   allow_realized);
         if (g != R::kKillOk) return g;
-        *reinterpret_cast<std::uint32_t*>(a + kActReason) = R::kKillRainGone;
-        *reinterpret_cast<std::uint32_t*>(a + kActKiller) = *reinterpret_cast<const std::uint32_t*>(a + kActId);
+        *reinterpret_cast<std::uint32_t*>(a + kActReason) = reason ? reason : R::kKillRainGone;
+        *reinterpret_cast<std::uint32_t*>(a + kActKiller) = killer == kKillerZero ? 0u : killer ? killer : *reinterpret_cast<const std::uint32_t*>(a + kActId);
         *reinterpret_cast<float*>(a + kActHealth) = 0.0f;
         *reinterpret_cast<std::uint32_t*>(a + kActFlags) |= 8u;
         return R::kKillOk;
@@ -222,12 +228,16 @@ void GzDetour(void* self, float dt, std::uint64_t r8, std::uint64_t r9) {
             std::uint32_t id = 0;
             if (!ReadU32(me + kActId, &id)) applied = kApplyFault;
             else if (id != g_slot_id[i].load(std::memory_order_relaxed)) applied = kApplyStale;
-            else applied = KillNow(me);
+            else
+                applied = KillNow(me, g_slot_reason[i].load(std::memory_order_relaxed), g_slot_killer[i].load(std::memory_order_relaxed),
+                                  g_slot_realized[i].load(std::memory_order_relaxed));
             break;
         }
     }
     const float prev_before = ReadF(me + kActPrevHealth);
     g_orig(self, dt, r8, r9);
+    for (unsigned k = 0; k < kAfterSlots; ++k)  // round 31: bt_probe 22, bt_mirror, bt_extra (game thread)
+        if (const AfterUpdateFn after = g_after[k].load(std::memory_order_acquire)) after(me);
     // detect: the death edge across this update (+0x2B0 above 0 before it, +0x180 not above 0 after it)
     const float health_after = ReadF(me + kActHealth);
     const bool edge = prev_before > 0 && !(health_after > 0) && !std::isnan(health_after);
@@ -326,7 +336,7 @@ bool InstallHook(const char* why, char* msg, std::size_t cap) noexcept {
 
 bool HookIn() noexcept { return g_hook; }
 
-bool ArmKill(std::uintptr_t actor, std::uint32_t id, std::uint8_t tag) noexcept {
+bool ArmKill(std::uintptr_t actor, std::uint32_t id, std::uint8_t tag, std::uint32_t reason, std::uint32_t killer, bool allow_realized) noexcept {
     if (!g_hook || !actor || g_pass.load() || !(Check() & kBitKill)) return false;
     for (unsigned i = 0; i < kSlots; ++i)
         if (g_slot_actor[i].load() == actor) return false;
@@ -334,6 +344,9 @@ bool ArmKill(std::uintptr_t actor, std::uint32_t id, std::uint8_t tag) noexcept 
         if (g_slot_actor[i].load() != 0) continue;
         g_slot_tag[i].store(tag, std::memory_order_relaxed);
         g_slot_id[i].store(id, std::memory_order_relaxed);
+        g_slot_reason[i].store(reason, std::memory_order_relaxed);
+        g_slot_killer[i].store(killer, std::memory_order_relaxed);
+        g_slot_realized[i].store(allow_realized, std::memory_order_relaxed);
         std::uintptr_t free_slot = 0;
         if (g_slot_actor[i].compare_exchange_strong(free_slot, actor, std::memory_order_release)) return true;
     }
@@ -412,8 +425,14 @@ void Threads(unsigned* tick, unsigned* other, unsigned* threads, bool* over) noe
     if (over) *over = g_tid_over.load() != 0;
 }
 
+void SetAfterUpdate(AfterSlot slot, AfterUpdateFn fn) noexcept {
+    if (slot < kAfterSlots) g_after[slot].store(g_pass.load() ? nullptr : fn, std::memory_order_release);
+}
+void SetAfterUpdate(AfterUpdateFn fn) noexcept { SetAfterUpdate(kAfterProbe, fn); }
+
 void EmergencyStop() noexcept {
     g_pass.store(true);
+    for (unsigned k = 0; k < kAfterSlots; ++k) g_after[k].store(nullptr);
     for (unsigned i = 0; i < kSlots; ++i) g_slot_actor[i].store(0);
 }
 

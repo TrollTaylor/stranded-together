@@ -50,10 +50,10 @@ bool RootOf(game::Entity* e, double (&pos)[3]) {
     return R::PosSane(pos);
 }
 
-void PutMark(std::uint64_t key, std::uint8_t kind, const double (&pos)[3], float hp, bool gold, bool test, double now_ms) {
+void PutMark(std::uint64_t key, std::uint8_t kind, const double (&pos)[3], float hp, bool gold, bool test, double now_ms, float radius = 0) {
     if (!g_on || !R::PosSane(pos)) return;
     R::MarkEntry m;
-    m.key = key, m.kind = kind, m.hp = hp, m.gold = gold, m.test = test, m.seen_ms = now_ms;
+    m.key = key, m.kind = kind, m.hp = hp, m.radius = radius, m.gold = gold, m.test = test, m.seen_ms = now_ms;
     std::memcpy(m.pos, pos, sizeof(m.pos));
     g_book.Put(m);
 }
@@ -74,8 +74,8 @@ void Gazer(std::uint32_t loc, const double (&pos)[3], bool test, double now_ms) 
 
 void DropGazer(std::uint32_t loc) noexcept { g_book.Drop(R::GazerMarkKey(loc)); }
 
-void Tar(const double (&pos)[3], bool gold, bool test, double now_ms) noexcept {
-    PutMark(R::kMarkKeyTar, R::kMarkTar, pos, -1, gold, test, now_ms);
+void Tar(const double (&pos)[3], bool gold, bool test, double now_ms, float radius_m) noexcept {
+    PutMark(R::kMarkKeyTar, R::kMarkTar, pos, -1, gold, test, now_ms, radius_m);
 }
 
 void Catcher(const double (&pos)[3], float hp_pct, double now_ms) noexcept {
@@ -114,7 +114,7 @@ void Tick(game::Entity* local, bool local_active, game::Entity* partner, bool pa
             b.kind = tags::kBtTar;
             if (body_ok) std::memcpy(b.anchor, body, sizeof(b.anchor));
             b.anchor[2] += kTarGroundM;
-            b.radius = kTarRadiusM;
+            b.radius = m.radius > 0 ? m.radius : kTarRadiusM;
             b.gold = m.gold;
         } else if (m.kind == R::kMarkCatcher) {
             b.kind = tags::kBtCatcher;

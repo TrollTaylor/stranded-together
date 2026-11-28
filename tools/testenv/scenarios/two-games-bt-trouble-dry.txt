@@ -1,0 +1,85 @@
+# Round 31 stage 3 gate (the round 31 build spec, Stage 3; module bt_hunt): leg D, the dry region (under sun: decides RS).
+# Under sun (no dev_weather on either game) the host stands at bt-field-mknot-s (gazers of 390B7DE4 within 50 m), the guest at
+# -1046 36 0 (about 7 m away: inside the spot) with the gazer census on (bt_probe 1). The host's bt_sync 8 20 (a test HUNT r 12 m
+# round its Sam, 20 s) makes the guest's kind-2 rain spot r 50 m on it. The guest reads the raw rain level at the spot before the
+# first spot (dry) and 10 s later (the rain level), and the census sees the gazers under it turn ARMED (0x80000). Then the
+# real-save leg as a rehearsal (a hidden run's guest is always sandboxed): bt_sync 8 -1 1 on the guest gives its spots a real
+# save's gate (review safety 1: a rain spot is timefall there, world state in her save, so none is made at any distance), so the
+# second test HUNT books no spot: its UP line says "rain spot: none (this game plays on its own real save ...)".
+# Pass: bt_rain defaults to 1. Fail: RS is DROPPED (the spot code stays behind bt_rain 0); HUNT ships with markers only.
+# The raw rain (FUN_142E0C3F0) is not positive when dry: region 43 under sun reads about -0.5 (probe-findings 5: host:1154 -0.500,
+# guest:1225 -0.480; gate run 20261128-011447 guest:1375 "check -0 s: raw -0.500" with the gazers un-armed, 00010004), a kind-0 dry
+# spot about +0.45, heavy rain -1.5, and the kind-2 spot here -1.0 (20261128-011308 guest:1528 "+10 s: raw -1.005"). So dry is
+# above -0.6 and the rain at or below -0.8 (the first gate's "positive = dry" was wrong; its rain check also let -0.5 through).
+# Look at: 01 (the guest under the fresh spot: dry yet), 02 (10 s later: the rain), 03 (the rehearsal: no rain made).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-trouble-dry -SeedSaves complete-100 -GuestSeed profile-only -Id round31-bt-hunt
+# From the launcher-generated ini (launcherini local-test: the launcher's Local test already writes host_save=1, a sandboxed
+# guest; testenv refuses an added host_save line with launcherini) plus the key under test.
+# covers: bt-hunt
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini bt_sync=2
+ini bt_rain=1
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[bt\] sync: bt_sync=2 as the host
+@guest waitlog 5 \[bt\] sync: bt_sync=2 as the guest
+waitlog 60 \[bt\] hunt: partner hello: HUNT both ways; rain spots here on
+@guest waitlog 60 \[bt\] hunt: partner hello: HUNT both ways; rain spots here on
+@both action dev_god 2
+wait 3000
+goto bt-field-mknot-s
+@guest goto -1046 36 0
+wait 10000
+@guest action bt_probe 1
+@guest waitlog 10 \[bt\] probe on: every
+wait 5000
+# ---- leg D: the host's test HUNT under sun; the guest (inside the spot) checks it rains there
+action bt_sync 8 20
+waitlog 5 \[bt\] hunt: test HUNT: episode [0-9]+ at
+waitlog 5 \[bt\] hunt: HUNT sent \(test\): UP \(episode
+@guest waitlog 5 \[bt\] hunt: partner hunt UP at .* r 12 m.*test
+@guest waitlog 5 \[bt\] hunt: rain spot check -0 s: raw (-0\.[0-5][0-9]*|0\.[0-9]+|[1-9][0-9.]*) at the spot
+@guest waitlog 3 \[bt\] hunt: rain spot on: hunt at .* r 50 m
+@guest screenshot 01-guest-fresh-spot
+@guest waitlog 15 \[bt\] ([0-9]+ gazers \(390B7DE4 bt211_01\)|gazer loc [0-9A-F]{8} \([0-9A-F]{5}, 390B7DE4 bt211_01\)) flags [0-9A-F]{8} ->[0-9A-F]{3}[89A-F][0-9A-F]{4}
+@guest waitlog 14 \[bt\] hunt: rain spot check \+10 s: raw (-0\.[89][0-9]*|-1\.[0-9]+) at the spot
+@guest screenshot 02-guest-spot-10s
+@guest waitlog 15 \[bt\] hunt: partner hunt CLEAR \(episode
+@guest waitlog 5 \[bt\] hunt: rain spot off: the hunt ended
+@guest waitlog 12 \[bt\] hunt: rain spot gone: slot [0-7] \(spots 0\)
+wait 2000
+# ---- the real-save leg (rehearsed): a real-save guest makes no rain spot at all (timefall there is world state in her save)
+@guest action bt_sync 8 -1 1
+@guest waitlog 5 \[bt\] hunt: real-save rehearsal on
+action bt_sync 8 12
+waitnew 5 \[bt\] hunt: HUNT sent \(test\): UP \(episode
+@guest waitlog 8 \[bt\] hunt: partner hunt UP at .*rain spot: none \(this game plays on its own real save \(host_save=0\): a rain spot is timefall there \(bt_sync 8 -1 1: the test's real-save stand-in\)\)
+@guest screenshot 03-guest-rehearsal-none
+@guest waitnew 16 \[bt\] hunt: partner hunt CLEAR \(episode
+@guest action bt_sync 8 -1 0
+@guest waitlog 5 \[bt\] hunt: real-save rehearsal off
+# ---- stop
+@guest action bt_probe 0
+nolog \[bt\] hunt: byte check FAILED
+@guest nolog \[bt\] hunt: byte check FAILED
+nolog \[bt\] hunt: rain spot call FAULTED
+@guest nolog \[bt\] hunt: rain spot call FAULTED
+nolog \[bt\] hunt: rain spot (still listed|gone unverified)
+@guest nolog \[bt\] hunt: rain spot (still listed|gone unverified)
+nolog \[bt\] hunt: HUNT NOT sent
+@guest nolog \[bt\] hunt: HUNT NOT sent
+nolog \[bt\] hunt: a bad HUNT
+@guest nolog \[bt\] hunt: a bad HUNT
+nolog \[bt\] byte check FAILED
+@guest nolog \[bt\] byte check FAILED
+nolog \[bt\] sync off
+@guest nolog \[bt\] sync off
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest quit
+wait 3000
+quit

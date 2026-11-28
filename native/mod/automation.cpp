@@ -1243,6 +1243,7 @@ Outcome DoAction(const Command& c) {
     debug::Request r;
     r.action = found->id;
     for (std::size_t i = 0; i < c.numbers.size() && i < 3; ++i) r.v[i] = c.numbers[i];
+    for (std::size_t i = 3; i < c.numbers.size() && i < 5; ++i) r.x[i - 3] = c.numbers[i];  // round 31: bt_probe's 4th / 5th
     for (std::size_t i = 0; i < c.numbers.size() && i < 2; ++i) r.f[i] = static_cast<float>(c.numbers[i]);
     if (c.numbers.size() == 1) r.i = static_cast<std::int32_t>(c.numbers[0]);  // voice_ping <line>
     r.flag = !c.numbers.empty() && c.numbers[0] != 0;

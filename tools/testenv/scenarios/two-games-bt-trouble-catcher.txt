@@ -1,0 +1,51 @@
+# Round 31 stage 7 gate (the round 31 build spec, Stage 7; module bt_catcher): leg C (host bt_sync 10).
+# CATCH (BTS1 type 14, cap 0x4000): the sender reads the catcher manager's records (class, pos, bar, hp) and sends the SPAWN /
+# GONE edges (the notify hash, or the record diff); the receiver logs "[bt] partner catcher:" lines, draws the catcher marker
+# at the partner's catcher and asks bt_hunt for a rain spot there (bt_rain=1 only). bt_sync 10 [m] is the test catcher (hidden
+# runs only): a test Quad (lion) 20 m ahead of the sender, SPAWN 100 %, 60 % at 1.5 s, 20 % at 3 s, GONE at 4.5 s. No game writes.
+# Look at: 01 (the guest's catcher marker over the host's test catcher).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-trouble-catcher -SeedSaves complete-100 -GuestSeed profile-only -Id round31-bt-catcher
+# From the launcher-generated ini (launcherini local-test: the launcher's Local test already writes host_save=1, a sandboxed
+# guest; testenv refuses an added host_save line with launcherini) plus the key under test.
+# covers: bt-catcher
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini bt_sync=2
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[bt\] sync: bt_sync=2 as the host
+@guest waitlog 5 \[bt\] sync: bt_sync=2 as the guest
+waitlog 5 \[bt\] catcher: byte checks [0-9]+/[0-9]+ ok; records ok
+@guest waitlog 5 \[bt\] catcher: byte checks [0-9]+/[0-9]+ ok; records ok
+waitlog 60 \[bt\] catcher: the partner sends and takes CATCH
+@guest waitlog 60 \[bt\] catcher: the partner sends and takes CATCH
+@both action dev_god 2
+wait 3000
+# ---- leg C: the host's test catcher; the guest logs SPAWN, the 60 % step and GONE, and draws the marker
+action bt_sync 10
+waitlog 5 \[bt\] catcher: test catcher [0-9A-F]{8}: Quad \(lion\) at
+@guest waitlog 10 \[bt\] partner catcher: Quad \(lion\) SPAWN at
+@guest screenshot 01-guest-catcher-mark
+@guest waitlog 10 \[bt\] partner catcher: Quad \(lion\) hp 60%
+@guest waitlog 10 \[bt\] partner catcher: Quad \(lion\) GONE
+waitlog 10 \[bt\] catcher: test catcher [0-9A-F]{8} done
+# With bt_rain=1 (only if Stage 3 leg D passed) the guest also logs bt_hunt's
+#   \[bt\] hunt: rain spot on: catcher at .* r 130 m
+# (not gated here: bt_rain stays 0 in this ini).
+wait 4000
+# ---- the guest's test catcher: the host the same
+@guest action bt_sync 10
+@guest waitlog 5 \[bt\] catcher: test catcher [0-9A-F]{8}: Quad \(lion\) at
+waitlog 10 \[bt\] partner catcher: Quad \(lion\) SPAWN at
+waitlog 10 \[bt\] partner catcher: Quad \(lion\) hp 60%
+waitlog 10 \[bt\] partner catcher: Quad \(lion\) GONE
+wait 4000
+# ---- the natural leg (not gated here; the spec's natural check): the host runs bt_sync 33 at bt-field-mknot-s and the
+# guest logs "partner catcher: <class> SPAWN", then GONE 10-25 s later (12-16 s expected).
+# ---- stop: no failed byte check, no refused CATCH
+nolog \[bt\] catcher: byte check FAILED
+@guest nolog \[bt\] catcher: byte check FAILED
+@both action bt_sync 0

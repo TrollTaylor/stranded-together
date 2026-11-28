@@ -24,7 +24,9 @@
 //   action <name> [numbers...]     a debug action (st::debug registry, label with spaces as
 //                                  underscores: respawn_partner, log_status, teleport x y z).
 //                                  Numbers fill Request::v[0..2] and f[0..1]; the first one
-//                                  also sets flag (!= 0) and, when it is the only one, i
+//                                  also sets flag (!= 0) and, when it is the only one, i.
+//                                  At most 3 numbers; bt_probe takes 5 (round 31: the 4th
+//                                  and 5th fill Request::x[0..1])
 //   waitplayer <s>                 until the tick's snapshot has the local player
 //   waitlog <s> <text>             until a NEW log line contains <text>
 //   waitworld <s> [goto]           until the local Sam is playable and still for 1.5 s: a player, awake, nothing loading,
@@ -297,7 +299,8 @@ inline bool ParseCommand(const std::string& raw, Command* out, std::string* erro
             if (!detail::Number(w[i], -1e9, 1e9, &v)) return *error = "action: argument '" + w[i] + "' is not a number", false;
             out->numbers.push_back(v);
         }
-        if (out->numbers.size() > 3) return *error = "action: at most 3 numbers", false;
+        if (out->numbers.size() > (out->text == "bt_probe" ? 5u : 3u))
+            return *error = out->text == "bt_probe" ? "action: bt_probe takes at most 5 numbers" : "action: at most 3 numbers", false;
         out->kind = Kind::action;
     } else if (verb == "waitplayer") {
         std::uint32_t s = 0;

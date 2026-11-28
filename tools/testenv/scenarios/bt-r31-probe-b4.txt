@@ -1,0 +1,49 @@
+# Round 31 stage 0 (docs/enemy-sync.md 25), part b4 (see bt-r31-probe-a for the batch): the real voidout, the last step of a run.
+#   35: FUN_14299B1B0(mgr, Sam, 1, 0) at Sam: the game's own GameOver, load and respawn follow; after the respawn the probe dumps
+#   the craters (28) and the weather (15): "[bt] void real: after the respawn:" then the crater lines (a gazer-voidout crater or
+#   none). The probe always ends with one "[bt] void real: done (after the respawn | no load within 120 s | Sam not back within
+#   150 s)" line within 150 s, and that is the only wait after the voidout: which path it took is the reading, not a failure. The
+#   load and the respawn are read from the log ("the load began", "Sam is back"), never waited on. No step is optional (a failed
+#   optional step fails the run too: docs/hidden-testing.md).
+# Stage 0 fix (run 20261127-210145): the GameOver ended on the game's Load menu (a quickstart run has no checkpoint to continue
+# from) and nothing loaded in 120 s. A is pressed every 3 s until the load begins (or the probe gives up): the menu's first entry,
+# one of this run's sandboxed saves, loads, and the respawn is read as designed.
+# Review fix (run 20261127-220544): the A path loaded a save that predates the voidout (wx2 after the respawn: clock 430354.0, the
+# start state), so "0 records" could not tell "no crater from a gazer voidout" from "the save predates it", and only ruled out a
+# crater added before the reload. Now a checkpoint save is forced first (save_guard 1 4 1, as b3; 15 logs the clock it holds), so
+# the GameOver has a checkpoint to continue from (12 s screenshot: which menu shows), and the respawn's crater lines are read after a
+# continue: a clock after the respawn at or above the pre-save one says the forced checkpoint was the one loaded.
+# covers: research
+# select: probe
+role solo
+graphics low
+timeout 360
+start control 200
+goto bt-field-mknot-s
+action dev_god 2
+wait 3000
+action bt_probe 1
+waitlog 10 \[bt\] byte checks: [0-9]+/[0-9]+ ok
+action bt_probe 28
+waitlog 10 \[bt\] r31 probe byte checks: [0-9]+/[0-9]+ ok
+waitlog 5 \[bt\] crater: -?[0-9]+ records
+action bt_probe 15
+waitnew 5 \[bt\] wx2: slot
+until 30 1500 \[save\] #[0-9]+ pending \(forced save F[0-9]+\): auto save => action save_guard 1 4 1
+waitlog 60 \[save\] finished ok: #[0-9]+ \(forced save F[0-9]+\)
+wait 2000
+screenshot 01-before
+action bt_probe 35
+waitnew 5 \[bt\] void real: flow
+wait 1000
+screenshot 02-voidout-1s
+wait 11000
+screenshot 02b-gameover-12s
+until 115 3000 \[bt\] void real: (the load began|done \() => pad A 150
+waitlog 170 \[bt\] void real: done \(
+screenshot 03-after-respawn
+nolog \[bt\] FATAL-GUARD
+nolog \[bt\] r31 probe byte check FAILED
+nolog \[bt\] probe byte check FAILED
+nolog \[bt\] .*FAULTED
+quit

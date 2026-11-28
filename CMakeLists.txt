@@ -177,7 +177,15 @@ add_library(st_mod SHARED
   native/mod/enemy_l1_probe.cpp
   native/mod/bt_sync.cpp
   native/mod/bt_world.cpp
+  native/mod/bt_probe_r31.cpp
   native/mod/bt_markers.cpp
+  native/mod/bt_wx.cpp
+  native/mod/bt_hunt.cpp
+  native/mod/bt_tar.cpp
+  native/mod/bt_mirror.cpp
+  native/mod/bt_void.cpp
+  native/mod/bt_catcher.cpp
+  native/mod/bt_extra.cpp
   native/mod/enemy_sense_hooks.cpp
   native/mod/odradek_sync.cpp
   native/mod/enemy_target.cpp
@@ -380,6 +388,15 @@ target_include_directories(st_bt_rules_tests PRIVATE native/mod)
 target_compile_options(st_bt_rules_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_bt_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_bt_rules_tests COMMAND st_bt_rules_tests)
+# Round 31: one pure-logic test per BT feature module (tests/bt_<x>_tests.cpp, native/mod/bt_<x>_rules.hpp), so the builders
+# never share a test file.
+foreach(st_bt_x wx hunt tar mirror void catcher extra)
+  add_executable(st_bt_${st_bt_x}_tests tests/bt_${st_bt_x}_tests.cpp)
+  target_include_directories(st_bt_${st_bt_x}_tests PRIVATE native/mod)
+  target_compile_options(st_bt_${st_bt_x}_tests PRIVATE ${ST_WARNINGS})
+  target_compile_definitions(st_bt_${st_bt_x}_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+  add_test(NAME st_bt_${st_bt_x}_tests COMMAND st_bt_${st_bt_x}_tests)
+endforeach()
 
 # ---- Shots, the pure part (native/mod/shot_wire.*): the SFX1 / SEH1 codecs, the record flag byte, the replay set, the dedupe,
 # the hand anchor, the play gate, pulls, the rate cap (docs/enemy-sync.md P3a).

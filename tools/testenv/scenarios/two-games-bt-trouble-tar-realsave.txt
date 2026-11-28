@@ -1,0 +1,63 @@
+# Round 31 stage 4 gate (the round 31 build spec, Stage 4; module bt_tar): leg T, the host_save=0 leg (not felt; the cargo d 0 read).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-trouble-tar-realsave -SeedSaves complete-100 -GuestSeed profile-only -Id round31-bt-tar
+# From the launcher-generated ini (launcherini local-test) plus the key under test. NOTE: that file is host_save=1 (a sandboxed
+# guest) and testenv refuses an added host_save line, so this leg runs the refusal path on the sandboxed guest: bt_sync 12 0 1
+# (bt_tar.cpp Command, hidden runs only) makes the guest count as a real-save guest for the tar gate. A true host_save=0 leg
+# needs a shared mechanism (a testenv or config switch; not this module's to add).
+# The host's test HUNT (bt_sync 8) reaches the guest: "not felt", no record in the guest's list, the cargo read across the hunt.
+# Then bt_sync 12 0 2 and a second test HUNT: felt again (the gate takes nothing else with it).
+# No dev_god, no dev_weather (timefall would wear the cargo the not-felt line reads).
+# covers: bt-tar
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini bt_sync=2
+ini bt_tar=1
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[bt\] sync: bt_sync=2 as the host
+@guest waitlog 5 \[bt\] sync: bt_sync=2 as the guest
+waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role guest
+@guest waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role host
+@guest waitlog 5 \[bt\] tar: the partner's hello: bt_sync 2, role 1, HUNT cap yes \(the tar feel can run here\)
+wait 3000
+goto bt-field-mknot-s
+@guest goto -1046 36 0
+wait 15000
+# ---- the guest as a real-save guest: the partner's tar not felt, nothing written
+@guest action bt_sync 12 0 1
+@guest waitnew 3 \[bt\] tar: bt_sync 12: this game counts as a real-save guest for the tar gate: on
+action bt_sync 8
+waitlog 5 \[bt\] hunt: test HUNT: episode [0-9]+ at \(.*\): UP r 12 m
+# waitlog, not waitnew (run 20261128-021141): the guest's UP line (guest 51.968) comes while the host's action step still runs,
+# before the step above starts, so a waitnew cannot see it; this leg's HUNT is the run's first, so it is the first UP line.
+# The not-felt line comes in the same ms (run 20261128-011815: guest 50.031); the gate went on just before, so it is the first.
+@guest waitlog 8 \[bt\] hunt: partner hunt UP at \(.*\) r 12 m
+@guest waitlog 5 \[bt\] tar: not felt: this game plays on its own real save \(host_save=0\) \(bt_sync 12 0 1: .*\): the partner's tar at \([0-9. -]+\) r 12\.0 m is [0-9.]+ m from Sam .*no record goes in \(kRealSaveOk false\)
+@guest screenshot 01-guest-not-felt
+# the control (no record in the list): the cargo read across the partner's hunt, with pieces carried. Not 0 (run
+# 20261128-080156: -658.641, 5 of 22 worn): those pieces wear at this spot with no tar too (tar-feel-echo leg C), so any value passes.
+@guest waitnew 30 \[bt\] tar: not felt \(episode [0-9]+, [0-9.]+ s, ended: (the partner's hunt ended \(CLEAR\)|no HUNT for 3 s)\): cargo d -?[0-9]+\.[0-9]{3} \([1-9][0-9]* pieces\)
+wait 4000
+# ---- the gate off again: the next HUNT is felt (the record in and out as in two-games-bt-trouble-tar)
+@guest action bt_sync 12 0 2
+@guest waitnew 3 \[bt\] tar: bt_sync 12: this game counts as a real-save guest for the tar gate: off
+action bt_sync 8
+@guest waitnew 8 \[bt\] tar: record in \(hm\+0xD0 1/10\) at \([0-9. -]+\) r 12\.0 m h 2\.0
+@guest waitnew 30 \[bt\] tar: record out \((the partner's hunt ended \(CLEAR\)|no HUNT for 3 s)\): removed yes, count 0; .*; hm140 0x0;
+wait 4000
+@both action bt_sync 0
+@guest waitlog 5 \[bt\] r31 status: tar: bt_tar=1, record out, in 1 out 1 \(game 0\) moved [0-9]+, faults 0;
+nolog \[bt\] tar: record in
+@guest nolog \[bt\] tar: byte check FAILED
+@guest nolog \[bt\] tar: off:
+@guest nolog \[bt\] tar: .*FAULTED
+@guest nolog \[bt\] tar: .*hm140 0x[1-9A-F]
+@guest nolog \[bt\] tar: record out \(the game took it out of the list\)
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest quit
+wait 3000
+quit

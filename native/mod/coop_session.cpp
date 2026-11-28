@@ -2090,7 +2090,25 @@ void Tick(double now) noexcept {
     }
 }
 
+// Hidden solo runs only (bt-r31-probe-b3): the pause menu's Load of the run's own newest save without a session. Solo
+// has no host-held save session, so the load sites are byte-checked here once; the save redirect must be active (the
+// run's scratch saves only). Game thread (a debug action), SEH-guarded call.
+static bool SoloPauseLoad(const double (&v)[3], char* msg, std::size_t cap) noexcept {
+    static int checked = -1;  // -1 not yet, 0 failed, 1 ok
+    if (!automation::Enabled() || !automation::SavesRedirected())
+        return std::snprintf(msg, cap, "solo: hidden runs with the save redirect only"), false;
+    if (checked < 0) checked = (CheckSites() & (kCommon | kLoadCall)) ? 0 : 1;
+    if (checked != 1) return std::snprintf(msg, cap, "solo: the load call's byte check failed"), false;
+    if (!Session()) return std::snprintf(msg, cap, "solo: in the world only"), false;
+    const int type = static_cast<int>(v[1]), index = static_cast<int>(v[2]);
+    const bool ok = CallPauseLoadAny(type, index);
+    std::snprintf(msg, cap, "test: pause-menu Load (0x142636990) of type %d index %d %s (solo)", type, index, ok ? "requested" : "FAULTED");
+    Log("[coop] %s", msg);
+    return ok;
+}
+
 bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept {
+    if (op == 5 && g_role == 0 && g_cfg.role == Role::solo) return SoloPauseLoad(v, msg, cap);
     if (g_role == 0) return std::snprintf(msg, cap, "no host-held save session (host_save=0 or role %s)", RoleName(g_cfg.role)), false;
     if (!g_active.load()) return std::snprintf(msg, cap, "the host-held save session is OFF: %s", g_off), false;
     const double now = link::NowMsPrecise();

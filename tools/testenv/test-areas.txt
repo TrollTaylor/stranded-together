@@ -77,6 +77,13 @@ area odradek-gear          : round 28 O1: the partner's Odradek as cinematic pro
 area odradek-scan          : round 28 O3: the partner's Odradek scan on both screens (odradek_scan_sync, SOD1; gate two-games-odradek-scan)
 area odradek-pose          : round 29 O2: the partner's Odradek animates (odradek_pose, kGearOdraPoseCap, STK1 kGearPoseOdra, the body on the arm tip; gate two-games-odradek-pose)
 area bt-sync               : round 28 B1: the BT field sync (bt_sync, BTS1, the host's RESET on the guest; gate two-games-bt-field)
+area bt-weather          : round 31 stage 2 WX: the host's forecast on a sandboxed guest (bt_wx, WXROW / WXBEAT; gates two-games-bt-weather*)
+area bt-hunt             : round 31 stage 3: HUNT, PULLED (bt_sync 8), the rain spots, the markers glue (bt_hunt; gates two-games-bt-trouble, two-games-bt-trouble-dry)
+area bt-tar              : round 31 stage 4 TF: the partner's hunt felt as tar, list 0 (bt_tar; gates tar-feel-echo, two-games-bt-trouble-tar*)
+area bt-mirror           : round 31 stage 5 GM: the gazer mirror (bt_mirror, GZST2, the drop detours; gates two-games-bt-gazer*)
+area bt-void             : round 31 stage 6 VB / CR: the partner's voidout blast and the crater record (bt_void, VOID2; gates two-games-bt-void*)
+area bt-catcher          : round 31 stage 7 CS: the partner's catcher state and edges (bt_catcher, CATCH; gate two-games-bt-trouble-catcher)
+area bt-extra            : round 31 stage 8: the kill look, RESPAWN, SKY (bt_extra; gates two-games-bt-kill-look, two-games-bt-kill-respawn*, bt-sky-sun)
 area shots                 : the players' shots on the other screen (docs/enemy-sync.md P3a): capture, SFX1, the CreateBullet replay, its damage dropped
 area story                 : story tools, story loads
 area dev-tools             : dev tools: spawn, goto, weather, refill, god mode
@@ -174,6 +181,22 @@ native/mod/odra_rules.hpp              odradek-scan
 # the wire; its gate two-games-enemy-mirror), P2's hits (enemy-hits: two-games-enemy-hit; enemy-compat: two-games-enemy-hits-off),
 # P1b/P1c's ownership (enemy-own: auto run since round 21, its gate two-games-enemy-camp passed). The ~regex lines below add the later phases by the changed lines.
 native/mod/bt_sync.*                   bt-sync
+# round 31: the shared interface of the seven feature modules (bt_sync.cpp routes to them), then each module's own area
+native/mod/bt_feature.hpp              bt-sync
+native/mod/bt_wx.*                     bt-weather
+native/mod/bt_wx_rules.hpp             bt-weather
+native/mod/bt_hunt.*                   bt-hunt
+native/mod/bt_hunt_rules.hpp           bt-hunt
+native/mod/bt_tar.*                    bt-tar
+native/mod/bt_tar_rules.hpp            bt-tar
+native/mod/bt_mirror.*                 bt-mirror
+native/mod/bt_mirror_rules.hpp         bt-mirror
+native/mod/bt_void.*                   bt-void
+native/mod/bt_void_rules.hpp           bt-void
+native/mod/bt_catcher.*                bt-catcher
+native/mod/bt_catcher_rules.hpp        bt-catcher
+native/mod/bt_extra.*                  bt-extra
+native/mod/bt_extra_rules.hpp          bt-extra
 native/mod/bt_rules.hpp                bt-sync
 native/mod/bt_world.*                  bt-sync
 native/mod/bt_markers.*                bt-sync

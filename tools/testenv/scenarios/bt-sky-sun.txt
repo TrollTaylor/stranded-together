@@ -1,0 +1,71 @@
+# Round 31 stage 8 gate (the round 31 build spec, Stage 8; module bt_extra): solo under sun at bt-field-mknot-s (no dev_weather).
+# Solo under sun at bt-field-mknot-s (no dev_weather: the bit's only reader 0x142E1D6B3 forces +0x6508 = 1, which shows only
+# where +0x6508 reads 0). Leg 1 is the spec's: the probe's call (bt_probe 34 10). Leg 2 is the module's own call (bt_sync 11 1 10:
+# bt_extra's SkyCall, the same SetStartControlFlags FUN_142E1FED0(1) every 0.1 s, restored by stopping).
+# Pass (manual, from the shots): the mean colour moves by more than 10 in a channel in 02 / 05 against 01 / 04 and returns in 03 /
+# 06; and (from the log) no census change line for the gazers during either 10 s (flags stay 00010004), "wx2 here" raw and
+# mgr238 equal in the three bt_probe 15 dumps. Then bt_sky defaults to 1 with kSkyRealSaveOk = true; otherwise SKY is DROPPED
+# (bt_sky stays 0 and the sky code is removed from bt_extra.cpp).
+# Look at: 01 / 02 / 03 (the probe's call), 04 / 05 / 06 (the module's call). 00 -> 01 is the natural drift over 5 s with no
+# write (the first run's shots darkened by 11-14 per channel from 01 to 1.5 s after the stop, so drift must be told apart from the
+# write); 03b / 06b, 10 s after each stop, show whether the look returns once the environment blend has ramped back.
+# The +0x6508 fall-back is read in the bt_probe 15 dump after each leg, not on the probe's "sky done" line: that line reads +0x6508
+# in the same game-thread tick as its clear, before the next weather update (FUN_142E1D600 zeroes +0x6508 at 0x142E1D66F every
+# update and sets it from bit 0 at 0x142E1D6B3; the game itself zeroes +0x6518 when the +0x651C 0.2 s timer runs out, 0x142E1DC63),
+# so it reads 1 by construction (run 20261128-013341: "sky done (time): 301 calls, +0x6518 bit 0 cleared yes, 6508 1").
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario bt-sky-sun -SeedSaves complete-100
+# covers: bt-extra
+role solo
+graphics low
+timeout 360
+ini bt_sky=1
+start control 200
+goto bt-field-mknot-s
+action dev_god 2
+wait 3000
+action bt_probe 1
+waitlog 10 \[bt\] byte checks: [0-9]+/[0-9]+ ok
+waitlog 30 \[bt\] extra: byte checks: [0-9]+/[0-9]+ ok; .*sky ok
+wait 5000
+screenshot 00-sky-drift
+wait 5000
+# under sun: +0x6508 reads 0
+action bt_probe 15
+waitnew 5 \[bt\] wx2: .* 6508 0 650A
+waitlog 1 \[bt\] wx2 here: region
+# ---- leg 1: the probe's call (the spec's pass lines)
+screenshot 01-sky-before
+action bt_probe 34 10
+waitnew 5 \[bt\] sky on for 10 s: 6508 0
+wait 5000
+waitnew 5 \[bt\] sky \+[0-9]: 6508 1 6518 0x1
+screenshot 02-sky-during
+waitnew 15 \[bt\] sky done
+# 6508 is read before the next weather update here (see the header): 1 by construction; its fall-back is the dump below
+waitlog 1 \[bt\] sky done \(time\): [0-9]+ calls, \+0x6518 bit 0 cleared yes, 6508 [01]
+wait 2000
+screenshot 03-sky-after
+action bt_probe 15
+# the fall-back: +0x6508 back to 0 and +0x6518 bit 0 clear
+waitnew 5 \[bt\] wx2: .* 6508 0 650A [0-9]+ 650B [0-9]+ 6515 [0-9]+ 6518 0x[0-9A-F]*[02468ACE] rainw
+wait 8000
+screenshot 03b-sky-after-10s
+# ---- leg 2: the module's call
+screenshot 04-extra-before
+action bt_sync 11 1 10
+waitnew 5 \[bt\] extra: sky test on for 10 s: 6508 0
+wait 5000
+waitnew 5 \[bt\] extra: sky \+[0-9]+: 6508 1 6518 0x1
+screenshot 05-extra-during
+waitnew 15 \[bt\] extra: sky test done \(time\): [0-9]+ calls
+waitnew 5 \[bt\] extra: sky after 1 s: 6508 0 6518 0x0 \(bit 0 cleared by the game\)
+wait 1000
+screenshot 06-extra-after
+action bt_probe 15
+waitnew 5 \[bt\] wx2: .* 6508 0 650A [0-9]+ 650B [0-9]+ 6515 [0-9]+ 6518 0x[0-9A-F]*[02468ACE] rainw
+wait 8000
+screenshot 06b-extra-after-10s
+nolog \[bt\] gazer loc [0-9A-F]{8} .*flags 00010004 ->
+nolog \[bt\] extra: byte check FAILED
+nolog FAULTED
+nolog \[bt\] extra: sky call FAULTED

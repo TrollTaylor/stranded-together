@@ -411,6 +411,11 @@ ini <key>=<value>            an extra session.ini line, for every game of the ru
                              coop_test_title_off=1: the guest's native title not installed, the
                              full-screen panel fallback; both honoured in hidden runs only;
                              guest_skip_logos=0: the guest's boot logos play)
+                             and the BT keys bt_probe, bt_sync, bt_trouble, bt_markers, bt_kill,
+                             bt_weather, bt_rain, bt_tar, bt_gazer_mirror, bt_void, bt_void_flash_m,
+                             bt_catcher, bt_crystals, bt_respawn, bt_sky, bt_kill_look, bt_test_real_save
+                             (bt_test_real_save=1, usually as @guest ini: a hidden-run guest counts as on
+                             her own real save for the BT sync, the host_save=0 legs' stand-in)
                              (testenv_core ScenarioIniKeyAllowed; a scenario
                              frame_cap is written after graphics low's 30, so it wins)
 @host ini <key>=<value>      the same, for the first game only; @guest ini for the guest game only (role
@@ -1974,3 +1979,357 @@ deleted the run's session.ini in the ~16 ms between deploy and the game start: t
 (the real tree was unchanged: the title only reads). Fixed twice: the testenv header is now
 `# Stranded Together testenv: ...` (launchers leave it alone), and a ds.exe that carries
 `ST_TESTENV_SUPERVISED` now ends in DllMain when it finds no automation (or sandbox) session.
+
+## Round 31: the BT sync gates ([enemy-sync.md](enemy-sync.md) section 26)
+
+Each feature module has its own gate scenarios. Run them one at a time (`pwsh -File tools\testenv\Run-Batch.ps1
+-Scenarios <name> -SeedSaves complete-100 -GuestSeed profile-only -Id round31-bt-<x>`), in this order, and flip a
+feature's default only after its gate passed. The two-game ones use `launcherini local-test` (a host_save=1, sandboxed
+guest); their host_save=0 legs use `@guest ini bt_test_real_save=1` or a module's own stand-in op.
+
+The order (the build spec's "Order"; each line: the scenario, then the default to flip once it passes):
+1. `two-games-bt-weather` (-Id round31-bt-wx): flip bt_weather 1 -> 2 (config.hpp `int bt_weather = 1;` and its comment).
+2. `two-games-bt-weather-realsave` (bt_test_real_save on the guest): no flip; it must pass before 2 ships.
+3. `two-games-bt-trouble` (legs 1-2, the test HUNT both ways): no flip (HUNT is on with bt_sync and cap 0x400).
+4. `two-games-bt-trouble-dry` (-Id round31-bt-hunt, leg D and the real-save rehearsal): flip bt_rain 0 -> 1; if it fails, RS
+   is DROPPED and HUNT ships with the markers only.
+5. `tar-feel-echo` (role echo): no flip alone.
+6. `two-games-bt-trouble-tar`: with 5 passed, flip bt_tar 0 -> 1 (config.hpp). kRealSaveOk (bt_tar_rules.hpp) goes true only
+   if a record-out / not-felt line shows `cargo d 0.000 (N>=1 pieces)`.
+7. `two-games-bt-trouble-tar-realsave`: no flip.
+8. `two-games-bt-void` (-Id round31-bt-void, legs 1 and 4): no flip (bt_void=1 already plays the blast); the real-save 300 m
+   floor stays (leg 4's vehicle and cargo part is not built).
+9. `two-games-bt-void-crater` (leg 2): no flip. CR is DROPPED this round (a crater was followed by a game-server write); the
+   gate now checks that bt_void=2 stays harmless (acts as 1).
+10. `two-games-bt-void-realsave` (leg 3): no flip.
+11. `two-games-bt-trouble-catcher` (-Id round31-bt-catcher, leg C): no flip (bt_catcher=1 already; bt_crystals stays 0).
+12. `two-games-bt-gazer` (-Id round31-bt-mirror): flip bt_gazer_mirror 0 -> 1 after reading the shots (the gazer in frame,
+    agitated, turned to the host); set kAgitOnHost = false first if "Lou's stress level is increasing" shows only in 02-*.
+13. `two-games-bt-gazer-realsave`: no flip.
+14. `two-games-bt-kill-look` (-Id round31-bt-extra, leg K): flip bt_kill_look 0 -> 1 only if 03 / 04 / 05 show the realized
+    gazer's death; else the kill look is DROPPED.
+15. `two-games-bt-kill-respawn` (leg R): flip bt_respawn 0 -> 1 once it passes and a gate run's host has logged a `(natural)`
+    respawn.
+16. `two-games-bt-kill-respawn-realsave`: no flip.
+17. `bt-sky-sun` (solo): flip bt_sky 0 -> 1 together with kSkyRealSaveOk = true (bt_extra_rules.hpp) only if the mean colour
+    moves by more than 10 in a channel and returns; else SKY is DROPPED and its code removed.
+
+### Weather (WX: the host's forecast on a sandboxed guest; bt_wx)
+
+**`two-games-bt-weather`** (round 31 stage 2, legs 1-3).
+
+`pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-weather -SeedSaves complete-100 -GuestSeed profile-only -Id round31-bt-wx`
+
+The ini is `launcherini local-test`: the launcher's own Local test, with host_save=1, so the guest is sandboxed. The scenario
+adds `bt_sync=2` and `bt_weather=2`. Both games are at bt-field-mknot-s, the guest 2 m off.
+* Setup: both games log `wx: partner hello`, `wx: byte checks ... wx ok, the pre-job ok` and `wx: hooks in`. Then:
+  * the host logs `wx sent: ... (3 messages)`;
+  * the guest logs `the host's forecast in`, then `wx applied: slot [1-3] gen [0-9]+ crc [0-9A-F]{8} \(first: instant\)`
+    and `own rows saved before the first write (eff0 E at Sam's region R)`. The first apply can come on the load's tail,
+    before her region at Sam is read; the saved line then waits for the region (at most 10 s), so E is a number.
+* Leg 1: the host runs `dev_weather 1`. Within 40 s the guest logs
+  `wx compare: schedule equal; rain host -x at host, here -y at Sam`, with both values below -0.5.
+* Leg 2: the host runs `dev_weather 0`. Within 40 s the guest logs `schedule equal` with her raw rain above 0.
+* Leg 3: `@both action coop_session 1 20000`. Within 30 s the guest logs
+  `wx restored: link lost \(own rows written back: eff0 [0-3]\)`. Within 90 s it logs
+  `wx applied: ... (first: instant)` again.
+  * Check by eye that the restore's eff0 equals the E in the `own rows saved` line.
+  * After the reconnect, the guest logs no `partner gone` line: with no beacon yet on the new link session, bt_sync waits 12 s
+    from the partner's hello (before, run 20261128-010942 logged `wx: not applied: partner gone (held for 10 s)` 16 ms after
+    `[link] CONNECTED`, and the re-apply came 10 s late).
+  * The first edge names the restore. With every datagram dropped, the link counts as down about 2 s in (run
+    20261128-010942), before the 10 s WXBEAT stale and the 12 s partner beacon, so the why is "link lost".
+* nolog on both games: FATAL-GUARD, FAULTED, `wx: r31 byte check FAILED` and guarded writes failed. Also nolog:
+  * on the host, `wx applied`;
+  * on the guest, `own rows dropped` and `EmergencyStop: the own rows NOT written back`.
+
+**`two-games-bt-weather-realsave`** (leg 4: a guest on her own real save).
+* The pass: the guest logs `wx: hooks in: ... this guest plays on her own real save: compared only, never written`, then
+  `wx: not applied: this game plays on its own real save \(host_save=0\)`. The host logs `wx: partner hello ... the guest
+  compares only`.
+* After the host's `dev_weather 1`, the guest's compare line comes. nolog: `wx applied` on both games, and `own rows saved` and
+  `wx restored` on the guest.
+* The real save is the stand-in `@guest ini bt_test_real_save=1` (hidden runs only): launcherini local-test writes
+  host_save=1, testenv refuses an added host_save line, and a hidden run always redirects the saves. With the key, bt_sync's
+  SandboxedHere() is false on the guest, so TickCtx.real_save and I::RealSave() say "her own real save" and her hello leaves
+  out kCapResetApply. Her saves stay redirected: the key only takes writes away. The guest first logs
+  `[bt] sync: bt_test_real_save=1: this guest counts as on her own real save`.
+
+### Partner hunts and rain spots (HUNT, PULLED, RS and the tar marker; bt_hunt)
+
+**two-games-bt-trouble (extended for round 31 stage 3).**
+`pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-trouble -SeedSaves complete-100 -GuestSeed profile-only`.
+The scenario runs `ini bt_rain=1` on both games. Legs 1-2 run under sun at the field, before dev_weather, so no gazer is ARMED and
+the spot is not held. Leg 1 is the host's `bt_sync 8 14`; leg 2 is the guest's, mirrored.
+
+The receiver's pass lines:
+
+* `\[bt\] hunt: partner hunt UP at .* r 12 m.*test`
+* `\[bt\] hunt: rain spot on: hunt at .* r 50 m`
+* `\[bt\] hunt: partner PULLED level 1\.10`
+* `\[bt\] partner trouble: PULLED \(episode`
+* `\[bt\] hunt: partner hunt CLEAR \(episode`
+* `\[bt\] hunt: rain spot off: the hunt ended`
+* within 12 s, `\[bt\] hunt: rain spot gone: slot [0-7] \(spots 0\)`
+
+The sender's pass lines:
+
+* `\[bt\] hunt: test HUNT: episode`
+* `\[bt\] hunt: HUNT sent \(test\): UP`
+* `\[bt\] TROUBLE sent: PULLED \(episode`
+* `\[bt\] hunt: HUNT sent \(test\): CLEAR`
+
+Round 30's legs follow in the rain, as before. Its old `nolog ... partner trouble: PULLED` is gone, since PULLED is expected now.
+New nologs: `hunt: byte check FAILED`, `rain spot call FAULTED`, `rain spot (still listed|gone unverified)`, `HUNT NOT sent`,
+`a bad HUNT`.
+
+**two-games-bt-trouble-dry (leg D: decides RS).**
+`pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-trouble-dry -SeedSaves complete-100 -GuestSeed profile-only`.
+The run is under sun (no dev_weather). The host stands at bt-field-mknot-s and the guest at -1046 36 0, inside the spot, with the
+gazer census on (`bt_probe 1`). The host runs `bt_sync 8 20`. The guest's pass lines:
+
+* `\[bt\] hunt: rain spot check -0 s: raw (-0\.[0-5][0-9]*|0\.[0-9]+|[1-9][0-9.]*) at the spot` (dry before the spot: region 43 under sun reads about -0.5)
+* `\[bt\] hunt: rain spot on: hunt at .* r 50 m`
+* within 15 s, the census change line (ARMED 0x80000 set): the group form `\[bt\] [0-9]+ gazers \(390B7DE4 bt211_01\) flags ...`
+  or, for 3 gazers or fewer, the per-gazer form `\[bt\] gazer loc ... 390B7DE4 bt211_01\) flags ...`. In both forms the flags
+  end with `->[0-9A-F]{3}[89A-F][0-9A-F]{4}`.
+* `\[bt\] hunt: rain spot check \+10 s: raw (-0\.[89][0-9]*|-1\.[0-9]+) at the spot` (the rain level: the kind-2 spot reads about -1.0)
+* the CLEAR, `rain spot off: the hunt ended`, and within 12 s `rain spot gone: slot [0-7] \(spots 0\)`
+
+Then comes the real-save leg, as a rehearsal. The guest turns it on with `bt_sync 8 -1 1`, and the host runs `bt_sync 8 12`. The
+guest's pass lines:
+
+* `\[bt\] hunt: partner hunt UP at .*rain spot: none \(this game plays on its own real save \(host_save=0\): a rain spot is
+  timefall there \(bt_sync 8 -1 1: the test's real-save stand-in\)\)`: no slot is booked at any distance (review, safety 1: a
+  rain spot is timefall there, world state in her save). A `nolog` cannot scope this, because leg D's spot logged "rain spot on"
+  earlier.
+* `@guest waitnew 16 \[bt\] hunt: partner hunt CLEAR \(episode` (the rehearsal's hunt ends).
+
+Pass: `bt_rain` defaults to 1. Fail: RS is dropped (the code stays behind bt_rain 0), and HUNT ships with the markers only.
+
+### The partner's tar, felt here (TF; bt_tar)
+
+**Config key.** `bt_tar` (0 off, 1 on; built 0). It goes to 1 after tar-feel-echo and two-games-bt-trouble-tar pass.
+
+**Gates.**
+- **tar-feel-echo** (role echo, complete-100). Sam stands at -1032 40. `bt_sync 12 -1040 40` puts the record in
+  (`record in (hm+0xD0 1/10) ... r 6.0 m h 2.0`). `dev_goto -1040 40` walks Sam in (`Sam in it (+0x844 0.5..1.0`). The test's
+  CLEAR takes the record out (`removed yes, count 0; ... hm140 0x0; health X -> X; game G -> G; cargo d <d> (N>=1 pieces)`).
+  Leg B: a second `bt_sync 12 -1040 40` on Sam where he stands (no move in it): record in, `Sam in it`, record out with the
+  same line (the clean cargo read). Leg C, the control: `bt_sync 12 0 1` and a third test give `not felt: this game plays on its
+  own real save` and `not felt (episode ..., ended: the partner's hunt ended (CLEAR)): cargo d 0.000 (N>=1 pieces)`.
+  Changed after run `20261128-020913` (every feel line passed; the record-out read `cargo d -632.983 (22 pieces)` across an
+  episode in which dev_goto moved Sam 8 m into a record 7 m above him): cargo d is the read that decides kRealSaveOk (build
+  spec stage 4), so legs A and B require the read (pieces carried, none lost), not its value; the control must read 0.
+- **two-games-bt-trouble-tar** (host + sandboxed guest, launcherini local-test). The host is at bt-field-mknot-s, the guest at
+  -1046 36. The host's `bt_sync 8` (bt_hunt's test HUNT, r 12 m, 20 s) gives, on the guest, `record in ... r 12.0 m h 2.0`,
+  then `Sam in it`, then `record out ((CLEAR)|no HUNT for 3 s): removed yes, count 0; ... hm140 0x0; health X -> X ...
+  cargo d <d> (N>=1 pieces)` (the guest stands still: a clean read). The host gets no `record in`. The guest's `byte checks
+  8/8 ok` comes right after its hello line. The guest's UP line comes 15-60 ms after the host's `bt_sync 8`, while that action
+  step's ack still runs (0.2 s in run `20261128-021023`), and the record-in / not-felt lines in the same ms, so all three are
+  `waitlog` steps (a `waitnew` after the host's own step cannot see them).
+- **two-games-bt-trouble-tar-realsave**: the same with `@guest bt_sync 12 0 1` first. The guest gives `not felt: ...` and
+  `not felt (episode ...): cargo d 0.000 (N>=1 pieces)`, with no record (the control). After `bt_sync 12 0 2`, a second HUNT
+  is felt again. This is
+  the sandboxed simulation; `@guest ini bt_test_real_save=1` would give the bt_sync-wide stand-in (not used here yet).
+- **Not to use in these gates:** no dev_god (Sam's health is evidence) and no dev_weather (timefall would wear the cargo).
+  `cargo d 0.000 (n pieces)` with n >= 1 on a clean record-out read (Sam still: tar-feel-echo leg B, the two-game guest), with
+  the no-record control at 0 too, is the read that decides kRealSaveOk; 0 pieces decides nothing; any wear keeps it false.
+
+**Log lines** (all `[bt] tar: ...`, 6 lines per 10 s per kind):
+- `bt_tar=1: the partner's hunt (HUNT) felt here as tar, list 0 (a real-save guest: refused until the gate's cargo read)`
+- `byte checks 8/8 ok (list 0 hm+0xC0 / +0xD0 under hm+0x130; cargo read ok|off)`, or `byte check FAILED: <site>` and
+  `off: n/8 byte checks ok (...)`
+- `the partner's hello: bt_sync 2, role 1, HUNT cap yes (the tar feel can run here)`
+- `record in (hm+0xD0 n/10) at (x y z) r R m h 2.0, Sam d m from its centre (episode e[, test]); health H, cargo ...`
+- `Sam in it (+0x844 v after t s; 2D d m vs r, z z vs top t)`, once each time Sam goes in
+- `+t s: Sam inside yes|no (...), +0x844 v (+0x848 v), count n, hm140 0x.., health H, game 0x..; so far cargo d ...[; worn k
+  of n, the most #i a -> b], Sam moved m m`, every 2 s for 20 s, then every 30 s (when the wear comes: at a move, or with
+  +0x844)
+- `record out (<why>): removed yes|no|..., count n; t s in; +0x844 max inside .. (n samples), outside .. (n samples), now ..;
+  hm140 0x..; health a -> b; game a -> b; cargo d ... (episode e[, test])[; worn k of n, the most #i a -> b]; Sam moved m m
+  while it was in` (the worn tail only when a piece's life fell)
+- `record out (the game took it out of the list): count n (in again in 1 s if the gate lets it)`
+- `record out (EmergencyStop): removed ..., count n`
+- `not felt: this game plays on its own real save (host_save=0)[ (bt_sync 12 0 1: ...)]: the partner's tar at (...) r R m is
+  d m from Sam (episode e); no record goes in (kRealSaveOk false)`, then `not felt (episode e, t s, ended: <why>): cargo d ...`
+- `test HUNT (bt_sync 12): UP at (x y z) r 6.0 m for 20 s (episode e), Sam d m from it` and `test HUNT (bt_sync 12): CLEAR
+  after 20 s (episode e)`
+- `list full (10): not added`, and `off: the list edit faulted (the tar feel stays off this session)`
+
+### Gazer reactions (GM: the gazer mirror, realized copies 25-60 m; bt_mirror)
+
+* `two-games-bt-gazer.txt` (round 31 stage 5 gate, bt_mirror):
+  * Run: `pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-gazer -SeedSaves complete-100 -GuestSeed
+    profile-only -Id round31-bt-mirror`.
+  * Setup: launcherini local-test (a host_save=1 guest), `ini bt_gazer_mirror=1`, both in rain (`dev_weather 1`), god mode.
+  * Control leg: the host at (-1090, 40), beyond 100 m from gazer 40AB1A93; the guest at (-1026, 40), 48 m from it (realized),
+    for 20 s; shots 01-*. It checks `nolog \[bt\] mirror: on: loc 40AB1A93`.
+  * Mirror leg: the host at (-978, 58), 9.3 m from the gazer (NEAR). The guest goes to (-1010, 40), then to (-1026, 40), and
+    aims her camera at the host's body (`shots 4 10 1`). Shots 02-* on both at 0 / 2 / 5 / 10 s. The guest's pass lines:
+    * `\[bt\] mirror: on: loc 40AB1A93 kind [0-9]+ .*you (2[5-9]|[3-5][0-9])\.[0-9] m`;
+    * `\[bt\] mirror: turn loc 40AB1A93: yaw -?[0-9.]+ -> -?[0-9.]+`;
+    * `\[bt\] mirror: \+[0-9]+ loc 40AB1A93: .*agit (0\.[5-9]|1\.0)`.
+  * Then the host leaves: `\[bt\] mirror: off: loc 40AB1A93 \(no GZST2 for 2 s\)`, then
+    `\[bt\] mirror: back loc 40AB1A93 .*back yes`.
+  * Host-side diagnostics (the sender's reach filter): `\[bt\] mirror: sending loc 40AB1A93` after the host's goto to
+    (-978, 58), and `\[bt\] mirror: not sent: loc 40AB1A93:` after its goto to (-1090, 40). ds.exe leaves the NEAR bit set
+    after the player leaves, so without the filter GZST2 went on and the guest's `off` never came (first gate batch).
+  * Negative leg: the host NEAR again, the guest at (-1046, 36), 66 m: `\[bt\] mirror: held: loc 40AB1A93 not realized here`.
+  * nologs: `byte check FAILED`, `hm140 0x[1-9A-F]` in a status line, `off: .*GameOver yes`, `back NO` (both games),
+    `refused: loc 40AB1A93`.
+  * Read in the shots that the gazer is in frame in 02-guest-mirror-*, agitated and turned toward the host. BB stress: if
+    "Lou's stress level is increasing" shows in 02-* and not in 01-*, set bt_mirror_rules.hpp `kAgitOnHost = false` before the
+    default flips. If both or neither show it, nothing changes.
+* `two-games-bt-gazer-realsave.txt` (the host_save=0 leg): the same legs, with `@guest action bt_sync 13 1` first.
+  * Pass lines: `\[bt\] mirror: on: loc 40AB1A93 kind [0-9]+ .*you ... m .*\(real save: turn only\)`, the turn line,
+    `\[bt\] mirror: \+[0-9]+ loc 40AB1A93: .*writes 0, yaw writes [1-9]`, and
+    `off: loc 40AB1A93 \(no GZST2 for 2 s\)` followed by `off: loc 40AB1A93 .*writes 0, .*the pair never written`.
+  * nologs: `\+0x7C 10\.0` and `, writes [1-9]` in its status lines, and `drop hooks in` on the guest.
+  * It ends with `bt_sync 13 2` (`test: back to normal`).
+
+### Voidout blasts and craters (VB: the faded flash, CR: the crater record; bt_void)
+
+All three run on the launcher-generated ini (local-test: host_save=1, a sandboxed guest) plus bt_sync=2. Both games wait for
+`[bt] void: partner hello: VOID2 yes`. Every one ends with nolog checks on these, on both games:
+* `[bt] void: .*FAULTED`
+* `[bt] void: byte check FAILED`
+* `NOT sent`
+* the guest's `flash window closed .*(changed|FAILED|did not finish)`
+* `\[gate\] OTGC WRITE` (no game-server write)
+
+The guest's line right after a host action (the blast at a distance, a refused crater, a dropped blast) is a `waitlog`, not a
+`waitnew`: the guest can log it in the tick the VOID2 arrives, before the host's own wait step starts. Each regex is unique in
+its run (by its distance or kind).
+
+**two-games-bt-void** (stage 6 gate, legs 1 and 4):
+`pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-void -SeedSaves complete-100 -GuestSeed profile-only -Id round31-bt-void`
+
+Leg 1 runs at the start spot (no BT field), both dev_god 2.
+* The host runs `bt_sync 9 600 1`. The guest must log:
+  * `partner voidout blast at .* (59[5-9]|60[0-5]) m from you: far resource, flash fade 150/450 m`
+  * `voidout flash window closed \(9 s\): fade restored \((already )?FadeStart 11500 FadeRange 11800\)`
+  * `partner blast near check \+12 s .*: unchanged`
+  * `partner voidout blast done \(16 s\): ref released`
+* Then `bt_sync 9 150 1`: the same at `(14[5-9]|15[0-5]) m`, far or near resource.
+* After the 150 m leg, `nolog \[gate\] OTGC WRITE` on both games: the crater run's write came after a 150 m blast plus its
+  crater, so this tells the blast alone apart. The run stops there, before the near leg, so at most one write. The same nologs
+  run again at the end.
+* Screenshots 01a-d (600 m) and 02a-d (150 m) at 0 / 2 / 5 / about 7.5 s (`01d-guest-600m-7s`, `02d-guest-150m-7s`: before
+  the 9 s close line, which the next waitnew must see). The reviewer checks that 01c's mean luminance is under 200 (faded out)
+  and 02c's is over 200 (full).
+
+Leg 4, the guest mortal (dev_god 0): blasts at 0, 30 and 90 m from the guest. Each must log the near check `unchanged`
+(health, GameOver flow, hm+0x140, GameOver bit) and `blast done`. The guest must log no `near check .*CHANGED` and no
+`blast dropped`. The vehicle and cargo part of leg 4 is not in it yet (no vehicle hp or cargo reader).
+
+**two-games-bt-void-crater** (leg 2, ini bt_void=2):
+`pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-void-crater -SeedSaves complete-100 -GuestSeed profile-only -Id round31-bt-void`
+
+CR is DROPPED this round (enemy-sync.md 26.5): the first batch's crater on the guest was followed 1.2 s later by a
+game-server write (`urn:otgc_set_mission_progress`). The gate now checks that bt_void=2 stays off and harmless:
+* Both games log `\[bt\] void: bt_void=2, flash fade 150/450 m: the partner blast; the crater record DROPPED this round` and
+  `partner hello: VOID2 yes, craters applied there no`.
+* The host runs `bt_sync 9 600 3` (a catcher-flagged test, crater wanted, 600 m: the blast alone made no write there). The
+  guest plays the far blast and logs `crater not added: CR dropped this round`; then `blast done \(16 s\)`.
+* The guest runs the same test; the host plays it and logs `crater not added: .*\(VOID2 #n\)`.
+* nologs on both: `crater record added`, and the usual ones (`OTGC WRITE` among them). The run's game_server_writes must be
+  empty. The load leg is gone: there is no record left to test.
+
+**two-games-bt-void-realsave** (leg 3, ini bt_void=2): the guest turns on the stand-in (`bt_sync 9 1 4`).
+`pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-void-realsave -SeedSaves complete-100 -GuestSeed profile-only -Id round31-bt-void`
+
+* The host runs `bt_sync 9 600 3`. The guest must log the far blast at 600 m, then `crater not added: this game plays on its
+  own real save \(host_save=0\): no crater record`.
+* The host runs `bt_sync 9 150 1`. The guest must log `partner voidout blast dropped: within 300 m of you or at an unknown
+  distance \(real save: the near blast is untested\)`.
+* The guest must log no `crater record added` and neither game an `OTGC WRITE`. The stand-in goes off at the end.
+
+**After the gate:** bt_void stays 1 (CR is DROPPED; bt_void=2 acts as 1). The real-save 300 m
+floor (kBlastRealMinM) stays until leg 4 passes with its vehicle and cargo part.
+
+### Catchers (CS: the partner's catcher state and edges; RW crystals DROPPED; bt_catcher)
+
+**two-games-bt-trouble-catcher** (stage 7 gate, leg C):
+`pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-trouble-catcher -SeedSaves complete-100 -GuestSeed profile-only -Id round31-bt-catcher`
+
+It runs on the launcher-generated ini (local-test: host_save=1, a sandboxed guest) plus bt_sync=2. Both games wait for the
+byte checks (`records ok`) and the partner's CATCH cap, then the host runs `bt_sync 10`.
+
+Pass lines on the guest:
+* `\[bt\] partner catcher: Quad \(lion\) SPAWN at`;
+* `\[bt\] partner catcher: Quad \(lion\) hp 60%`;
+* `\[bt\] partner catcher: Quad \(lion\) GONE`.
+
+On the host: `\[bt\] catcher: test catcher [0-9A-F]{8} done`.
+
+Then the same runs the other way: the guest runs `bt_sync 10` and the host logs the three lines. Neither game may log
+`\[bt\] catcher: byte check FAILED`. Screenshot 01 shows the guest's catcher marker. With bt_rain=1 (only if stage 3 leg D
+passed) the guest also logs `rain spot on: catcher at .* r 130 m`; that is not gated here.
+
+Natural check (not gated): the host runs bt_sync 33 at bt-field-mknot-s. The guest logs `partner catcher: <class> SPAWN`,
+then GONE 10-25 s later (12-16 s expected). A GONE before 10 s, or none by 25 s, fails.
+
+### Kill look, respawn and sky (bt_extra)
+
+All four scenarios are new, `covers: bt-extra`. The two-game ones use `launcherini local-test`, which gives a host_save=1
+(sandboxed) guest.
+
+**two-games-bt-kill-look** (leg K, `ini bt_kill_look=1`):
+`pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-kill-look -SeedSaves complete-100 -GuestSeed profile-only -Id round31-bt-extra`
+* Setup: both run dev_god 2 and dev_weather 1. The host stands at bt-field-mknot-s (59 m from gazer 40AB1A93); the guest at
+  -1010 40 0 (29.6 m, so her copy realizes).
+* She waits for `\[bt\] gz dump loc 40AB1A93 \([0-9]+ m\): .* state 2 .* entity 0x[1-9A-F]` (bt_probe 20 every 3 s), then takes
+  screenshot 01.
+* The host runs `bt_sync 7 0x40AB 0x1A93`.
+* Guest pass lines:
+  * `\[bt\] extra: kill look armed: reason 0x5414860D`
+  * `\[bt\] extra: kill applied: loc 40AB1A93 .* reason 0x5414860D .*realized yes \(state 2, entity 0x[1-9A-F]`
+  * `\[bt\] partner kill applied loc 40AB1A93 .*death edge seen`
+  * `\[bt\] extra: kill look \(5 s after the last applied kill\): [1-9][0-9]* applied \(realized [1-9][0-9]*\), stats d 0 / 0`
+  * the status `kill look on \(.. stats d 0/0\)`
+* Screenshots 03 / 04 / 05 at +0.5, +2 and +5 s must show the gazer's death; the GO is the visual.
+* nolog: `FAULTED`, `\[bt\] extra: byte check FAILED`.
+* KillGuard takes the realized copy only with the kill look on (`allow_realized`); this leg is the first time the update's
+  kill path runs on a state-2 gazer.
+
+**two-games-bt-kill-respawn** (leg R, `ini bt_respawn=1`):
+* Setup: the host at bt-field-mknot-s, the guest at -1046 36 0, field compares equal.
+* The host runs `bt_sync 11 0 0x390B7DE4`.
+* Pass lines:
+  * host: `\[bt\] extra: respawn on \(host\): field 390B7DE4 \(test, bt_sync 11\): .*sent to the guest`
+  * guest: `\[bt\] extra: RESPAWN received: field 390B7DE4 .*\(scene hash 390B7DE4\)`
+  * guest: `\[bt\] extra: respawn applied: field 390B7DE4 \(EnableRespawnGazers 0x1429A76D0 on scene 0x[1-9A-F]`
+  * guest: `\[bt\] extra: respawn after 2 s: field 390B7DE4: the respawn flag 0x4000000 on [0-9]+ of [1-9][0-9]* gazers here`
+  * the statuses `respawn hooked \(tx [1-9]` (host) and `respawn on \(tx 0 rx 1 ok 1 no 0` (guest)
+* nolog: `FAULTED`.
+* The natural respawn is read from any gate run's host log: `\[bt\] extra: respawn on \(host\): field [0-9A-F]{8} \(natural\)`.
+
+**two-games-bt-kill-respawn-realsave** (the host_save=0 leg, with a stand-in):
+* Hidden runs always redirect saves, and local-test is host_save=1, so the guest runs `bt_sync 11 2 1` first.
+* The host runs `bt_sync 11 0 0x390B7DE4`.
+* Guest pass line:
+  `\[bt\] extra: respawn not applied: field 390B7DE4: this game plays on its own real save \(host_save=0\): no respawn \(bt_sync 11 2: the test's real-save stand-in\)`
+* Guest nolog: `\[bt\] extra: respawn applied`.
+* A true host_save=0 guest (the launcher's Online ini) stays a manual check.
+
+**bt-sky-sun** (solo, `ini bt_sky=1`, no dev_weather):
+`pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario bt-sky-sun -SeedSaves complete-100`
+* Setup: bt-field-mknot-s, dev_god 2, bt_probe 1 (the census). `bt_probe 15` must read `6508 0`.
+* Leg 1 is the spec's: shot 01, `bt_probe 34 10`, shot 02 at +5 s, `waitnew 15 sky done`, shot 03 2 s later.
+  * `\[bt\] sky \+[0-9]: 6508 1 6518 0x1`
+  * `\[bt\] sky done \(time\): [0-9]+ calls, \+0x6518 bit 0 cleared yes, 6508 [01]` (read in the tick of the clear, before
+    the weather update zeroes +0x6508 at 0x142E1D66F: 1 by construction)
+  * the fall-back is the next `bt_probe 15` dump, after each leg:
+    `\[bt\] wx2: .* 6508 0 650A [0-9]+ 650B [0-9]+ 6515 [0-9]+ 6518 0x[0-9A-F]*[02468ACE] rainw`
+  * shots: 00 (5 s before 01, no write: the drift baseline), and 03b / 06b 10 s after each stop
+* Leg 2 is the module's own call: shot 04, `bt_sync 11 1 10`, shot 05, shot 06.
+  * `\[bt\] extra: sky \+[0-9]+: 6508 1 6518 0x1`
+  * `\[bt\] extra: sky test done \(time\)`
+  * `\[bt\] extra: sky after 1 s: 6508 0 6518 0x0 \(bit 0 cleared by the game\)`
+* nolog: `\[bt\] gazer loc [0-9A-F]{8} .*flags 00010004 ->` (no census change during the write), `FAULTED`.
+* Manual checks:
+  * "wx2 here" raw and mgr238 are equal in the three bt_probe 15 dumps;
+  * the mean colour of 02 / 05 moves by more than 10 in some channel against 01 / 04 (more than the 00 -> 01 drift with no
+    write), and returns in 03 / 06 or at the latest in 03b / 06b (10 s after the stop).
+* Pass: bt_sky goes to 1 and kSkyRealSaveOk to true. Fail: SKY is DROPPED.

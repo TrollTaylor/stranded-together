@@ -1,0 +1,79 @@
+# Round 31 stage 0 (docs/enemy-sync.md 25), part b (see bt-r31-probe-a for the batch): the hunt and the tar.
+# Timefall on (dev_weather 1), the counters in (16), the catcher log on for the whole run (32 300), then
+#   25 0: the game's own hunter area at Sam ("[bt] hunt end: caller e29e0|e5d50|c6cf0|d9080|other site" says which code path ends a
+#   hunt; read from the log, not waited on: a hunt that outlasts the 30 s window is a result too, "hunt self done (30 s): end seen
+#   no"); 25 1 with 24 30 (the crowd flag write; "[bt] crowd i: .. +0x8B8" and the hands count: PULLED);
+#   26 0 6 0: a tar mesh record at Sam (list 0, +0xD0), Sam walked 30 m out and back (dev_goto), "[bt] tar rec +t: inside yes/no
+#   (the locomotion's own test), +0x844 v (+0x848 raw), list non-empty +0x50, fact in_tar" and at the end "[bt] tar rec out (..):
+#   .. +0x844 max inside a, outside b" (+0x844 rises inside and not outside: the record alone makes tar; +0x848 is cleared every
+#   update, so it reads 0 from the Tick); then 26 0 6 1 the same with a circle (list 1, +0x70).
+# Cargo is read from the screenshots only (no cargo read in the probe).
+# covers: research
+# select: probe
+role solo
+graphics low
+timeout 360
+start control 200
+goto bt-field-mknot-s
+action dev_god 2
+action dev_weather 1
+wait 3000
+action bt_probe 1
+waitlog 10 \[bt\] byte checks: [0-9]+/[0-9]+ ok
+action bt_probe 16 10
+waitlog 10 \[bt\] r31 probe byte checks: [0-9]+/[0-9]+ ok
+waitlog 5 \[bt\] threads: [0-9]+ of 10 pass-through counters in
+action bt_probe 32 300
+waitlog 5 \[bt\] cat log on for 300 s
+# ---- 25 0: the game's hunter area at Sam
+action bt_probe 25 0
+waitnew 5 \[bt\] hunt self at Sam: FUN_1429B8D60
+wait 3000
+screenshot 01-hunt-self-3s
+waitlog 35 \[bt\] hunt self done \(.*\): end seen (yes|no)
+# ---- 25 1 with the hunt dump: the crowd flag
+action bt_probe 24 30
+action bt_probe 25 1
+waitnew 35 \[bt\] hunt self done \(
+waitlog 2 \[bt\] hunt self v1: crowd
+waitlog 10 \[bt\] hunt dump done
+screenshot 02-hunt-v1-after
+# ---- 26 0 6 0: a tar mesh record at Sam, Sam walked out and back
+# stage 0 fix (run 20261127-205559): the game's own hunt from 25 still held Sam's +0x844 at 1.0 when 26 began; Sam walks 30 m out
+# (the hunter area goes about 1 s after he leaves) and back, and the tar decays for 10 s first.
+action dev_goto -1010 40
+wait 4000
+action dev_goto -1040 40
+wait 10000
+action bt_probe 26 0 6 0
+waitnew 5 \[bt\] tar rec in: list 0
+wait 3000
+screenshot 03-tar-mesh-in
+action dev_goto -1010 40
+wait 6000
+screenshot 04-tar-mesh-out
+action dev_goto -1040 40
+wait 4000
+screenshot 05-tar-mesh-back
+waitnew 30 \[bt\] tar rec out
+# ---- 26 0 6 1: the same with a circle (list 1)
+action bt_probe 26 0 6 1
+waitnew 5 \[bt\] tar rec in: list 1
+wait 3000
+screenshot 06-tar-circle-in
+action dev_goto -1010 40
+wait 6000
+screenshot 07-tar-circle-out
+action dev_goto -1040 40
+wait 4000
+screenshot 08-tar-circle-back
+waitnew 30 \[bt\] tar rec out
+action bt_probe 16
+waitnew 5 \[bt\] wx job state at 17CF0: idle
+action bt_probe 0
+waitlog 5 \[bt\] probe stop
+nolog \[bt\] FATAL-GUARD
+nolog \[bt\] r31 probe byte check FAILED
+nolog \[bt\] probe byte check FAILED
+nolog \[bt\] .*FAULTED
+quit

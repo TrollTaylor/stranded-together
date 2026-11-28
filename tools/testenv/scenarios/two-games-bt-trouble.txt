@@ -6,12 +6,18 @@
 # gazer 40AB1A93, all 35 bt211_01 gazers streamed on both). bt_sync 5 is the test sequence (HUNTED, CATCHER 100 / 60 / 20 %,
 # CLEAR over 6 s), bt_sync 6 a test GZST of the sender's nearest gazer (hidden runs only).
 # Look at: 01 (the tar ring round the partner), 02 (the catcher ring and its bar over the partner), 05 / 06 (a gazer diamond).
-# covers: bt-sync
+# Round 31 stage 3 (docs/enemy-sync.md section 25; module bt_hunt), legs 1-2: HUNT (type 11) and the receiver's rain spot. Under sun
+# at the field (before dev_weather: no gazer there is ARMED, so the spot is not held), the host's bt_sync 8 14 (a test HUNT: UP
+# r 12 m, PULLED level 1.10 from 2 s to 6 s, CLEAR at 14 s), then the guest's. The receiver logs UP / PULLED / CLEAR, TROUBLE
+# says PULLED, and (bt_rain=1) it makes a kind-2 rain spot r 50 m on the partner, drops it at the CLEAR and reads the spot list
+# back until the spot is gone. Look at: 00a / 00b (the rain spot and the tar ring round the partner).
+# covers: bt-sync bt-hunt
 role host
 graphics low
 timeout 360
 launcherini local-test
 ini bt_sync=2
+ini bt_rain=1
 start control 200
 waitlog 60 \[vshare\] host: world ready
 @guest waitlog 60 \[vshare\] guest: world ready
@@ -24,13 +30,46 @@ waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role guest
 waitlog 5 \[bt\] sync: TROUBLE on, GZST on
 @guest waitlog 5 \[bt\] sync: TROUBLE on, GZST on
 @both action dev_god 2
-@both action dev_weather 1
 wait 3000
 goto bt-field-mknot-s
 @guest goto -1046 36 0
 wait 15000
 waitlog 20 \[bt\] field compare #[0-9]+: records equal .*bt211_01 35/35 print equal
 @guest waitlog 20 \[bt\] field compare #[0-9]+: records equal .*bt211_01 35/35 print equal
+waitlog 5 \[bt\] hunt: partner hello: HUNT both ways; rain spots here on
+@guest waitlog 5 \[bt\] hunt: partner hello: HUNT both ways; rain spots here on
+# ---- round 31 leg 1: the host's test HUNT; the guest logs it, says PULLED, rains on the host and lets the spot go at the CLEAR
+action bt_sync 8 14
+waitlog 5 \[bt\] hunt: test HUNT: episode [0-9]+ at
+waitlog 5 \[bt\] hunt: HUNT sent \(test\): UP \(episode
+@guest waitlog 5 \[bt\] hunt: partner hunt UP at .* r 12 m.*test
+@guest waitlog 5 \[bt\] hunt: rain spot on: hunt at .* r 50 m
+@guest waitlog 6 \[bt\] hunt: partner PULLED level 1\.10
+waitlog 5 \[bt\] TROUBLE sent: PULLED \(episode
+@guest waitlog 5 \[bt\] partner trouble: PULLED \(episode
+@guest screenshot 00a-guest-rain-spot
+@guest waitlog 15 \[bt\] hunt: partner hunt CLEAR \(episode
+waitlog 5 \[bt\] hunt: HUNT sent \(test\): CLEAR
+@guest waitlog 5 \[bt\] hunt: rain spot off: the hunt ended
+@guest waitlog 12 \[bt\] hunt: rain spot gone: slot [0-7] \(spots 0\)
+wait 2000
+# ---- round 31 leg 2: the guest's test HUNT; the host the same
+@guest action bt_sync 8 14
+@guest waitlog 5 \[bt\] hunt: test HUNT: episode [0-9]+ at
+@guest waitlog 5 \[bt\] hunt: HUNT sent \(test\): UP \(episode
+waitlog 5 \[bt\] hunt: partner hunt UP at .* r 12 m.*test
+waitlog 5 \[bt\] hunt: rain spot on: hunt at .* r 50 m
+waitlog 6 \[bt\] hunt: partner PULLED level 1\.10
+@guest waitlog 5 \[bt\] TROUBLE sent: PULLED \(episode
+waitlog 5 \[bt\] partner trouble: PULLED \(episode
+screenshot 00b-host-rain-spot
+waitlog 15 \[bt\] hunt: partner hunt CLEAR \(episode
+@guest waitlog 5 \[bt\] hunt: HUNT sent \(test\): CLEAR
+waitlog 5 \[bt\] hunt: rain spot off: the hunt ended
+waitlog 12 \[bt\] hunt: rain spot gone: slot [0-7] \(spots 0\)
+# ---- round 30's legs, in the rain as before
+@both action dev_weather 1
+wait 5000
 # ---- the host's test sequence: the guest logs each step, draws the markers, logs the catcher fight's toast as not shown
 action bt_sync 5
 waitlog 5 \[bt\] TROUBLE sent \(test\): HUNTED
@@ -89,8 +128,16 @@ nolog \[bt\] sync: a bad BTS1
 @guest nolog \[bt\] sync: a bad BTS1
 nolog \[bt\] TROUBLE NOT sent
 @guest nolog \[bt\] TROUBLE NOT sent
-nolog \[bt\] partner trouble: PULLED
-@guest nolog \[bt\] partner trouble: PULLED
+nolog \[bt\] hunt: byte check FAILED
+@guest nolog \[bt\] hunt: byte check FAILED
+nolog \[bt\] hunt: rain spot call FAULTED
+@guest nolog \[bt\] hunt: rain spot call FAULTED
+nolog \[bt\] hunt: rain spot (still listed|gone unverified)
+@guest nolog \[bt\] hunt: rain spot (still listed|gone unverified)
+nolog \[bt\] hunt: HUNT NOT sent
+@guest nolog \[bt\] hunt: HUNT NOT sent
+nolog \[bt\] hunt: a bad HUNT
+@guest nolog \[bt\] hunt: a bad HUNT
 nolog \[gate\] OTGC WRITE
 @guest nolog \[gate\] OTGC WRITE
 @guest quit

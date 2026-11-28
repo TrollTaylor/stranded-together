@@ -156,6 +156,13 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   left to each game the same way. There is no launcher switch yet.
 - New in round 28: when either player scans with the Odradek, the scan shows on both screens (both need this
   version).
+- New in round 31: the BTs are shared much more fully. The guest gets the host's weather; rain
+  falls around a BT hunt on your partner, and you sink into its tar if you are inside it; a BT
+  that notices your partner turns and stirs on your screen too; a voidout's blast shows in both games, with a
+  white flash when you are near; a catcher's rise and fall are marked; a BT either of you kills dies the same way
+  in both games; and when the host's BTs come back, the guest's do too. A guest playing her own save gets only the
+  look of these (no weather, rain, tar or anything else that could change her save). Voidout craters and the
+  tarred sky are not in this version. Both need this version.
 - New in round 30: when BTs notice, hunt or catch your partner you see small markers on your screen (the BT, the
   tar around them, the catcher's health), and a BT either of you kills dies in both games. Both need this version.
 - New in round 29: the partner's Odradek is shown on their left shoulder, and it opens, flaps, points and folds as

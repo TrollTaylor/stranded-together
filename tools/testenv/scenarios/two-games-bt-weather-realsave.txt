@@ -1,0 +1,49 @@
+# Round 31 stage 2 gate (the round 31 build spec, Stage 2; module bt_wx): leg 4, the host_save=0 leg (a real-save guest: never written).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-weather-realsave -SeedSaves complete-100 -GuestSeed profile-only -Id round31-bt-wx
+# From the launcher-generated ini (launcherini local-test) plus the key under test. That file is host_save=1 (a sandboxed
+# guest), testenv refuses an added host_save line, and a hidden run always redirects the saves (SavesRedirected), so the guest
+# gets bt_test_real_save=1 (hidden runs only): bt_sync's SandboxedHere() is false there, so TickCtx.real_save and I::RealSave()
+# say "her own real save" and her hello leaves out kCapResetApply (the host then sees a real-save guest). Her saves stay
+# redirected all the same: the stand-in only takes writes away.
+# The pass: the guest's "not applied: this game plays on its own real save" and no "wx applied" on either game; her compare
+# lines still come (the host still sends its rows), so the host's dev_weather 1 is used to show the guest's own rows stay hers.
+# covers: bt-weather
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini bt_sync=2
+ini bt_weather=2
+@guest ini bt_test_real_save=1
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[bt\] sync: bt_sync=2 as the host
+@guest waitlog 5 \[bt\] sync: bt_sync=2 as the guest
+@guest waitlog 5 \[bt\] sync: bt_test_real_save=1: this guest counts as on her own real save
+waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role guest
+@guest waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role host
+waitlog 10 \[bt\] wx: partner hello \(caps 0x[0-9A-F]+\): WX on; the guest compares only
+@guest waitlog 30 \[bt\] wx: hooks in: .*this guest plays on her own real save: compared only, never written
+@both action dev_god 2
+goto bt-field-mknot-s
+@guest goto -1046 36 0
+wait 3000
+waitlog 30 \[bt\] wx sent: slot [1-3] gen [0-9]+
+@guest waitlog 40 \[bt\] wx: not applied: this game plays on its own real save \(host_save=0\)
+action dev_weather 1
+waitnew 10 \[bt\] wx sent: slot [1-3] gen
+@guest waitnew 40 \[bt\] wx compare: schedule
+@guest screenshot 01-guest-own-weather
+wait 20000
+@guest nolog \[bt\] wx applied
+@guest nolog \[bt\] wx: own rows saved
+@guest nolog \[bt\] wx restored
+nolog \[bt\] wx applied
+nolog \[bt\] FATAL-GUARD
+nolog \[bt\] .*FAULTED
+nolog \[bt\] wx: r31 byte check FAILED
+@guest nolog \[bt\] FATAL-GUARD
+@guest nolog \[bt\] .*FAULTED
+@guest nolog \[bt\] wx: r31 byte check FAILED
+quit
