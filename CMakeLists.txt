@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(stranded_together VERSION 0.43.0 LANGUAGES C CXX)
+project(stranded_together VERSION 0.44.0 LANGUAGES C CXX)
 
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 set(CMAKE_CXX_STANDARD 17)
